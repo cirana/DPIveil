@@ -268,71 +268,91 @@ def direct_works(config, addresses, logger, probe=https_request):
 
 
 def test_candidates(config, session, logger, addresses=None, probe=https_request):
-    endpoint_addresses = _endpoint_addresses(config, logger)
-    if addresses is not None:
-        endpoint_addresses[config.host] = addresses
-    results = {}
+    """Select the first priority candidate that restores verified Discord web HTTPS.
+
+    Desktop endpoints are intentionally not part of selection: a synthetic
+    gateway/update probe can fail even when the real client works, and waiting
+    on those probes made startup unnecessarily slow.
+    """
+    ips = addresses or resolve_verified(config.host, config.timeout, config.max_ips)
     details = {}
 
-    for candidate in config.candidates:
-        endpoint_results = {}
-        for name, host, path, kind in config.health_checks:
-            ok = False
-            failures = []
-            ips = endpoint_addresses.get(host, [])
-            for ip in ips:
-                session.set_probe(candidate, host=host)
-                try:
-                    status, _ = _check_probe(
-                        kind, host, ip, path, config.timeout,
-                        on_connected=lambda port, c=candidate, h=host: session.set_probe(c, port, h),
-                        probe=probe,
-                    )
-                    if not session.probe_applied():
-                        raise ValueError("Candidate did not alter the probe ClientHello")
-                    logger.info(
-                        "Health probe | %s | %s | %s | %s | status=%s",
-                        candidate.name, name, host, ip, status,
-                    )
-                    ok = True
-                    break
-                except Exception as exc:
-                    failures.append(str(exc))
-                    logger.warning(
-                        "Health probe | %s | %s | %s | %s | failed: %s",
-                        candidate.name, name, host, ip, exc,
-                    )
-                finally:
-                    session.set_probe(None)
+    for candidate in sorted(config.candidates, key=lambda c: (c.priority, c.name)):
+        ok = False
+        failures = []
+        for ip in ips:
+            session.set_probe(candidate, host=config.host)
+            try:
+                status, _ = _check_probe(
+                    "http", config.host, ip, "/", config.timeout,
+                    on_connected=lambda port, c=candidate: session.set_probe(c, port, config.host),
+                    probe=probe,
+                )
+                if not session.probe_applied():
+                    raise ValueError("Candidate did not alter the probe ClientHello")
+                logger.info(
+                    "Web probe | %s | %s | %s | status=%s",
+                    candidate.name, config.host, ip, status,
+                )
+                ok = True
+                break
+            except Exception as exc:
+                failures.append(str(exc))
+                logger.warning(
+                    "Web probe | %s | %s | %s | failed: %s",
+                    candidate.name, config.host, ip, exc,
+                )
+            finally:
+                session.set_probe(None)
 
-            endpoint_results[name] = ok
-            if not ok and not ips:
-                failures.append("no verified IPv4 address")
-            if failures and not ok:
-                logger.warning("Health result | %s | %s | FAIL | %s",
-                               candidate.name, name, "; ".join(failures[:2]))
-            else:
-                logger.info("Health result | %s | %s | OK", candidate.name, name)
+        details[candidate.name] = {"web": ok}
+        if ok:
+            session.activate(candidate)
+            logger.info("Selected session strategy: %s", candidate.name)
+            return candidate, details
 
-        passed = sum(endpoint_results.values())
-        required = len(config.health_checks)
-        results[candidate.name] = passed
-        details[candidate.name] = endpoint_results
-        logger.info(
-            "Candidate %s: %s/%s Discord health checks passed",
-            candidate.name, passed, required,
+        logger.warning(
+            "Candidate %s failed Discord web health check%s",
+            candidate.name,
+            f": {'; '.join(failures[:2])}" if failures else "",
         )
 
-    # Web access is the hard requirement. Extra desktop checks are diagnostic:
-    # do not leave Discord completely unmodified just because an auxiliary
-    # endpoint (updates/gateway) rejects a synthetic health probe.
-    working = [c for c in config.candidates
-               if details[c.name].get("web", False)]
-    if not working:
-        logger.error("No candidate passed the Discord web health check; no strategy selected.")
-        return None, details
+    logger.error("No candidate passed the Discord web health check; no strategy selected.")
+    return None, details
 
-    selected = min(working, key=lambda c: (c.priority, c.name))
-    session.activate(selected)
-    logger.info("Selected session strategy: %s", selected.name)
-    return selected, details
+
+def diagnose_desktop_endpoints(config, logger):
+    """Best-effort short checks for desktop Discord dependencies.
+
+    The session strategy is already active when this runs, so these requests
+    pass through the selected DPI manipulation. Failures are diagnostic only.
+    """
+    timeout = min(config.timeout, 2.0)
+    results = {}
+    for name, host, path, kind in config.health_checks:
+        if name == "web":
+            continue
+        ok = False
+        try:
+            ips = resolve_verified(host, timeout, 1)
+        except Exception as exc:
+            logger.warning("Desktop diagnostic DNS | %s | %s | failed: %s", name, host, exc)
+            results[name] = False
+            continue
+
+        for ip in ips:
+            try:
+                status, _ = _check_probe(kind, host, ip, path, timeout)
+                logger.info(
+                    "Desktop diagnostic | %s | %s | %s | status=%s",
+                    name, host, ip, status,
+                )
+                ok = True
+                break
+            except Exception as exc:
+                logger.warning(
+                    "Desktop diagnostic | %s | %s | %s | failed: %s",
+                    name, host, ip, exc,
+                )
+        results[name] = ok
+    return results
