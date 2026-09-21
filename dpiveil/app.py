@@ -20,11 +20,11 @@ from dpiveil.engine import PacketEngine
 from dpiveil.profiles import load_profile
 from dpiveil.strategies.tls_fragment import FragmentConfig, TLSClientHelloFragmentStrategy
 from dpiveil.strategies.zapret_compat import ZapretCompatConfig, ZapretCompatStrategy
+from dpiveil.runtime import configure_pydivert, log_dir, resource_root
 from dpiveil.system import is_admin, is_windows, register_console_close_handler
 
-ROOT = Path(__file__).resolve().parent.parent
-LOG_DIR = ROOT / "logs"
-DEFAULT_PROFILE = ROOT / "profiles" / "default.json"
+LOG_DIR = log_dir()
+DEFAULT_PROFILE = resource_root() / "profiles" / "default.json"
 
 
 def configure_logging() -> logging.Logger:
@@ -46,12 +46,8 @@ def configure_logging() -> logging.Logger:
     return logger
 
 
-def check_pydivert() -> bool:
-    try:
-        import pydivert  # noqa: F401
-    except ImportError:
-        return False
-    return True
+def check_pydivert() -> tuple[bool, str | None]:
+    return configure_pydivert()
 
 
 def _target_domains(options) -> tuple[str, ...]:
@@ -133,9 +129,11 @@ def run() -> int:
         logger.info("Open CMD/PowerShell as administrator and run the program again.")
         return 1
 
-    if not check_pydivert():
-        logger.error("PyDivert is not installed.")
-        logger.info("Run: pip install -r requirements.txt")
+    pydivert_ok, pydivert_error = check_pydivert()
+    if not pydivert_ok:
+        logger.error("%s", pydivert_error or "PyDivert is unavailable.")
+        if not getattr(sys, "frozen", False):
+            logger.info("Run: pip install -r requirements.txt")
         return 1
 
     try:
