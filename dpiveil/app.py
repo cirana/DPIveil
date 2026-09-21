@@ -3,11 +3,12 @@ from __future__ import annotations
 import logging
 import sys
 import threading
+from dataclasses import replace
 from pathlib import Path
 
 from dpiveil import __version__
 from dpiveil.autoselect import AutoConfig, SessionStrategy, diagnose_desktop_endpoints, resolve_verified, test_candidates
-from dpiveil.dns_proxy import DNSProxyConfig, LocalDNSProxy
+from dpiveil.dns_redirect import DNSConfig, DNSRedirect, flush_dns_cache
 from dpiveil.engine import PacketEngine
 from dpiveil.profiles import load_profile
 from dpiveil.strategies.tls_fragment import FragmentConfig, TLSClientHelloFragmentStrategy
@@ -21,24 +22,18 @@ DEFAULT_PROFILE = ROOT / "profiles" / "default.json"
 
 def configure_logging() -> logging.Logger:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-
     logger = logging.getLogger("dpiveil")
     logger.setLevel(logging.INFO)
-
     if logger.handlers:
         return logger
-
     formatter = logging.Formatter(
         "%(asctime)s | %(levelname)-8s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-
     console = logging.StreamHandler()
     console.setFormatter(formatter)
-
     file_handler = logging.FileHandler(LOG_DIR / "dpiveil.log", encoding="utf-8")
     file_handler.setFormatter(formatter)
-
     logger.addHandler(console)
     logger.addHandler(file_handler)
     return logger
@@ -97,6 +92,35 @@ def build_strategy(profile):
     raise ValueError(f"Unknown strategy: {profile.strategy}")
 
 
+def choose_dns_config(base: DNSConfig) -> DNSConfig:
+    print()
+    print("DNS yönlendirme seçeneği")
+    print("  1) Yandex    77.88.8.8:1253  (Türkiye için önerilen)")
+    print("  2) Cloudflare 1.1.1.1:53")
+    print()
+    try:
+        choice = input("Seçim [1]: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        choice = ""
+
+    if choice == "2":
+        return replace(
+            base,
+            ipv4_resolver="1.1.1.1",
+            ipv4_port=53,
+            ipv6_resolver="2606:4700:4700::1111",
+            ipv6_port=53,
+        )
+
+    return replace(
+        base,
+        ipv4_resolver="77.88.8.8",
+        ipv4_port=1253,
+        ipv6_resolver="2a02:6b8::feed:0ff",
+        ipv6_port=1253,
+    )
+
+
 def run() -> int:
     logger = configure_logging()
 
@@ -122,7 +146,7 @@ def run() -> int:
     try:
         profile = load_profile(DEFAULT_PROFILE)
         strategy = build_strategy(profile)
-        dns_config = DNSProxyConfig.from_options(profile.dns_redirect)
+        dns_config = choose_dns_config(DNSConfig.from_options(profile.dns_redirect))
     except (OSError, KeyError, TypeError, ValueError) as exc:
         logger.error("Could not load default profile or strategy: %s", exc)
         return 1
@@ -131,6 +155,13 @@ def run() -> int:
     logger.info("Profile: %s", profile.name)
     logger.info("Filter: %s", profile.filter)
     logger.info("Strategy: %s", strategy.name)
+    logger.info(
+        "DNS redirect target: IPv4 %s:%s | IPv6 %s:%s",
+        dns_config.ipv4_resolver,
+        dns_config.ipv4_port,
+        dns_config.ipv6_resolver,
+        dns_config.ipv6_port,
+    )
     config = getattr(strategy, "config", None)
     mode = getattr(config, "mode", None)
     if mode:
@@ -138,28 +169,20 @@ def run() -> int:
     logger.info("Press Ctrl+C to stop.")
 
     dns_callback = getattr(strategy, "record_dns_answer", None)
-    dns = LocalDNSProxy(dns_config, logger, answer_callback=dns_callback) if dns_config.enabled else None
-    if dns is not None:
-        try:
-            dns.start()
-        except (OSError, RuntimeError, ValueError) as exc:
-            logger.error("DNS startup failed: %s", exc)
-            return 1
+    dns = DNSRedirect(dns_config, logger, answer_callback=dns_callback) if dns_config.enabled else None
 
-    try:
-        if profile.strategy == "auto":
-            return run_auto(profile, strategy, logger, dns)
+    if profile.strategy == "auto":
+        return run_auto(profile, strategy, logger, dns)
 
-        return run_manual(profile, strategy, logger, dns)
-    finally:
-        if dns is not None:
-            dns.stop()
+    return run_manual(profile, strategy, logger, dns)
 
 
 def run_manual(profile, strategy, logger, dns=None) -> int:
-    engine = PacketEngine(profile.filter, logger, strategy)
+    engine = PacketEngine(profile.filter, logger, strategy, dns_redirect=dns)
 
     try:
+        if dns is not None:
+            flush_dns_cache()
         engine.run()
     except KeyboardInterrupt:
         print()
@@ -177,6 +200,11 @@ def run_manual(profile, strategy, logger, dns=None) -> int:
             engine.stats.suspect_resets_dropped,
             engine.stats.send_errors,
         )
+        if dns is not None:
+            logger.info(
+                "DNS redirect: %s queries | %s replies | %s unexpected replies",
+                dns.queries, dns.responses, dns.spoofed,
+            )
         logger.info("DPIveil stopped cleanly.")
 
     return 0
@@ -184,7 +212,7 @@ def run_manual(profile, strategy, logger, dns=None) -> int:
 
 def run_auto(profile, session, logger, dns=None) -> int:
     config = AutoConfig.from_options(profile.strategy_options)
-    engine = PacketEngine(profile.filter, logger, session)
+    engine = PacketEngine(profile.filter, logger, session, dns_redirect=dns)
     errors = []
 
     def worker():
@@ -200,6 +228,16 @@ def run_auto(profile, session, logger, dns=None) -> int:
         if not engine.ready.wait(timeout=5) or errors or not thread.is_alive():
             logger.error("Could not start WinDivert engine: %s", errors or "engine not ready")
             return 1
+
+        if dns is not None:
+            flush_dns_cache()
+            logger.info(
+                "Transparent DNS redirect active | IPv4 %s:%s | IPv6 %s:%s",
+                dns.config.ipv4_resolver,
+                dns.config.ipv4_port,
+                dns.config.ipv6_resolver,
+                dns.config.ipv6_port,
+            )
 
         addresses = resolve_verified(config.host, config.timeout, config.max_ips)
         logger.info("Verified target addresses | %s | %s", config.host, ", ".join(addresses))
@@ -237,6 +275,11 @@ def run_auto(profile, session, logger, dns=None) -> int:
             f"{engine.stats.bytes:,}",
             engine.stats.send_errors,
         )
+        if dns is not None:
+            logger.info(
+                "DNS redirect: %s queries | %s replies | %s unexpected replies",
+                dns.queries, dns.responses, dns.spoofed,
+            )
 
 
 if __name__ == "__main__":
