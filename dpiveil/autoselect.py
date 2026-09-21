@@ -107,7 +107,16 @@ class DirectHTTPSConnection(http.client.HTTPSConnection):
             raise
 
 
-def https_request(host, address, path, timeout, on_connected=None, accept=None, headers=None):
+def https_request(
+    host,
+    address,
+    path,
+    timeout,
+    on_connected=None,
+    accept=None,
+    headers=None,
+    allowed_statuses=None,
+):
     connection = DirectHTTPSConnection(host, address, timeout, on_connected)
     try:
         request_headers = dict(headers or {})
@@ -115,7 +124,11 @@ def https_request(host, address, path, timeout, on_connected=None, accept=None, 
             request_headers["Accept"] = accept
         connection.request("GET" if accept or headers else "HEAD", path, headers=request_headers)
         response = connection.getresponse()
-        if not 200 <= response.status < 500:
+        if allowed_statuses is not None:
+            valid_status = response.status in allowed_statuses
+        else:
+            valid_status = 200 <= response.status < 500
+        if not valid_status:
             raise ValueError(f"Invalid HTTP status: {response.status}")
         return response.status, response.read(65536) if accept or headers else b""
     finally:
@@ -133,9 +146,8 @@ def websocket_probe(host, address, path, timeout, on_connected=None):
             "Sec-WebSocket-Version": "13",
             "User-Agent": "DPIveil/health-check",
         },
+        allowed_statuses={101, 400, 401, 403, 404, 426},
     )
-    if status not in (101, 400, 401, 403, 404, 426):
-        raise ValueError(f"Unexpected gateway HTTP status: {status}")
     return status, body
 
 
