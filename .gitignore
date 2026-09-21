@@ -12,8 +12,12 @@ env/
 
 dist/
 build/
-*.spec
 
 logs/
 .DS_Store
 Thumbs.db
+
+# Never commit code-signing material
+*.pfx
+*.p12
+*.key
