@@ -10,6 +10,8 @@ class Profile:
     name: str
     description: str
     filter: str
+    strategy: str
+    strategy_options: dict[str, object]
 
 
 def load_profile(path: Path) -> Profile:
@@ -19,4 +21,6 @@ def load_profile(path: Path) -> Profile:
         name=str(data["name"]),
         description=str(data.get("description", "")),
         filter=str(data["filter"]),
+        strategy=str(data.get("strategy", "passthrough")),
+        strategy_options=dict(data.get("strategy_options", {})),
     )
