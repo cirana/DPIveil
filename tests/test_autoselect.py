@@ -45,7 +45,7 @@ class AutoTests(unittest.TestCase):
         packet.tcp.src_port = 51234
         FakePacket.source = packet
 
-        def probe(host, ip, path, timeout, on_connected):
+        def probe(host, ip, path, timeout, on_connected, accept=None):
             on_connected(51234)
             session.process(packet)
             seen.append((session._candidate.name, ip))
@@ -77,7 +77,7 @@ class AutoTests(unittest.TestCase):
         packet.tcp.src_port = 51234
         FakePacket.source = packet
 
-        def probe(host, ip, path, timeout, on_connected):
+        def probe(host, ip, path, timeout, on_connected, accept=None):
             on_connected(51234)
             session.process(packet)
             seen.append(session._candidate.name)
