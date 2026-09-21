@@ -52,6 +52,88 @@ def flush_dns_cache():
         raise OSError("ipconfig /flushdns failed; Windows DNS cache was not cleared")
 
 
+def _read_dns_name(message: bytes, offset: int) -> tuple[str, int]:
+    labels = []
+    jumped = False
+    next_offset = offset
+    seen = set()
+
+    while offset < len(message):
+        if offset in seen:
+            raise ValueError("DNS compression loop")
+        seen.add(offset)
+        length = message[offset]
+
+        if length & 0xC0 == 0xC0:
+            if offset + 1 >= len(message):
+                raise ValueError("Truncated DNS pointer")
+            pointer = ((length & 0x3F) << 8) | message[offset + 1]
+            if not jumped:
+                next_offset = offset + 2
+                jumped = True
+            offset = pointer
+            continue
+
+        offset += 1
+        if length == 0:
+            if not jumped:
+                next_offset = offset
+            break
+        if offset + length > len(message):
+            raise ValueError("Truncated DNS label")
+        labels.append(message[offset:offset + length].decode("ascii"))
+        offset += length
+        if not jumped:
+            next_offset = offset
+
+    return ".".join(labels).lower(), next_offset
+
+
+def parse_dns_addresses(message: bytes) -> tuple[str | None, tuple[str, ...]]:
+    """Return the first queried hostname and all A/AAAA answers in a DNS reply."""
+    if len(message) < 12:
+        return None, ()
+
+    qdcount = int.from_bytes(message[4:6], "big")
+    ancount = int.from_bytes(message[6:8], "big")
+    offset = 12
+    query_name = None
+
+    try:
+        for index in range(qdcount):
+            name, offset = _read_dns_name(message, offset)
+            if index == 0:
+                query_name = name
+            if offset + 4 > len(message):
+                return query_name, ()
+            offset += 4
+
+        addresses = []
+        for _ in range(ancount):
+            _, offset = _read_dns_name(message, offset)
+            if offset + 10 > len(message):
+                break
+            rtype = int.from_bytes(message[offset:offset + 2], "big")
+            rclass = int.from_bytes(message[offset + 2:offset + 4], "big")
+            rdlength = int.from_bytes(message[offset + 8:offset + 10], "big")
+            offset += 10
+            if offset + rdlength > len(message):
+                break
+            rdata = message[offset:offset + rdlength]
+            offset += rdlength
+
+            if rclass != 1:
+                continue
+            if rtype == 1 and rdlength == 4:
+                addresses.append(socket.inet_ntop(socket.AF_INET, rdata))
+            elif rtype == 28 and rdlength == 16:
+                addresses.append(socket.inet_ntop(socket.AF_INET6, rdata))
+
+        return query_name, tuple(dict.fromkeys(addresses))
+    except (UnicodeDecodeError, ValueError, OSError):
+        return query_name, ()
+
+
 class _UDPHandler(socketserver.BaseRequestHandler):
     def handle(self):
         data, client = self.request
@@ -63,6 +145,7 @@ class _UDPHandler(socketserver.BaseRequestHandler):
                 upstream.settimeout(proxy.config.timeout)
                 upstream.sendto(data, (proxy.config.upstream_ipv4, proxy.config.upstream_port))
                 reply, _ = upstream.recvfrom(65535)
+            proxy.observe_reply(reply)
             client.sendto(reply, self.client_address)
             proxy.queries += 1
             proxy.replies += 1
@@ -100,6 +183,7 @@ class _TCPHandler(socketserver.BaseRequestHandler):
                     if not chunk:
                         return
                     reply += chunk
+            proxy.observe_reply(reply)
             self.request.sendall(reply_header + reply)
             proxy.queries += 1
             proxy.replies += 1
@@ -118,9 +202,10 @@ class _ThreadingTCPServer(socketserver.ThreadingTCPServer):
 
 
 class LocalDNSProxy:
-    def __init__(self, config: DNSProxyConfig, logger: logging.Logger):
+    def __init__(self, config: DNSProxyConfig, logger: logging.Logger, answer_callback=None):
         self.config = config
         self.logger = logger
+        self.answer_callback = answer_callback
         self.queries = 0
         self.replies = 0
         self.failures = 0
@@ -128,6 +213,16 @@ class LocalDNSProxy:
         self._tcp = None
         self._threads = []
         self._snapshot = []
+
+    def observe_reply(self, reply: bytes):
+        if self.answer_callback is None:
+            return
+        host, addresses = parse_dns_addresses(reply)
+        if host and addresses:
+            try:
+                self.answer_callback(host, addresses)
+            except Exception as exc:
+                self.logger.debug("DNS answer callback failed: %s", exc)
 
     def _active_adapters(self):
         script = r"""
