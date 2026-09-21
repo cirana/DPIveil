@@ -20,7 +20,7 @@ from dpiveil.engine import PacketEngine
 from dpiveil.profiles import load_profile
 from dpiveil.strategies.tls_fragment import FragmentConfig, TLSClientHelloFragmentStrategy
 from dpiveil.strategies.zapret_compat import ZapretCompatConfig, ZapretCompatStrategy
-from dpiveil.system import is_admin, is_windows
+from dpiveil.system import is_admin, is_windows, register_console_close_handler
 
 ROOT = Path(__file__).resolve().parent.parent
 LOG_DIR = ROOT / "logs"
@@ -153,9 +153,13 @@ def run() -> int:
     logger.info("Press Ctrl+C to stop.")
 
     dns_policy = WindowsDNSPolicy(dns_policy_config, logger) if dns_policy_config.enabled else None
+    unregister_close_handler = lambda: None
     if dns_policy is not None:
         try:
             dns_policy.start()
+            unregister_close_handler = register_console_close_handler(
+                lambda _event: dns_policy.stop()
+            )
         except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
             logger.error("Windows DNS policy startup failed: %s", exc)
             return 1
@@ -166,8 +170,11 @@ def run() -> int:
             return run_auto(profile, strategy, logger)
         return run_manual(profile, strategy, logger)
     finally:
-        if dns_policy is not None:
-            dns_policy.stop()
+        try:
+            if dns_policy is not None:
+                dns_policy.stop()
+        finally:
+            unregister_close_handler()
 
 
 def run_manual(profile, strategy, logger) -> int:
