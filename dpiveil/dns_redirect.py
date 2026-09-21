@@ -10,14 +10,16 @@ from dataclasses import dataclass, replace
 
 import pydivert
 
+from dpiveil.dns_proxy import parse_dns_addresses
+
 
 @dataclass(frozen=True)
 class DNSConfig:
     enabled: bool = False
-    ipv4_resolver: str = "77.88.8.8"
-    ipv4_port: int = 1253
-    ipv6_resolver: str = "2a02:6b8::feed:0ff"
-    ipv6_port: int = 1253
+    ipv4_resolver: str = "1.1.1.1"
+    ipv4_port: int = 53
+    ipv6_resolver: str = "2606:4700:4700::1111"
+    ipv6_port: int = 53
     max_age: float = 15.0
 
     @classmethod
@@ -35,16 +37,20 @@ class DNSConfig:
             raise ValueError("DNS resolver ports must be between 1 and 65535")
         if type(config.max_age) not in (int, float) or not 1 <= config.max_age <= 60:
             raise ValueError("DNS query lifetime must be 1–60 seconds")
-        return replace(config,
-                       ipv4_resolver=str(ipaddress.ip_address(config.ipv4_resolver)),
-                       ipv6_resolver=str(ipaddress.ip_address(config.ipv6_resolver)))
+        return replace(
+            config,
+            ipv4_resolver=str(ipaddress.ip_address(config.ipv4_resolver)),
+            ipv6_resolver=str(ipaddress.ip_address(config.ipv6_resolver)),
+        )
 
     @property
     def packet_filter(self):
         ports = sorted({53, self.ipv4_port, self.ipv6_port})
         inbound = " or ".join(f"udp.SrcPort == {port}" for port in ports)
-        return ("udp and !loopback and !impostor and "
-                f"((outbound and udp.DstPort == 53) or (inbound and ({inbound})))")
+        return (
+            "udp and !loopback and !impostor and "
+            f"((outbound and udp.DstPort == 53) or (inbound and ({inbound})))"
+        )
 
 
 def question_key(payload: bytes, response: bool):
@@ -63,7 +69,7 @@ def question_key(payload: bytes, response: bool):
         length = payload[pos]
         pos += 1
         if length > 63 or pos + length > len(payload):
-            return None  # Reject compressed pointers and malformed labels.
+            return None
         pos += length
         if length == 0:
             break
@@ -73,10 +79,24 @@ def question_key(payload: bytes, response: bool):
 
 
 class DNSRedirect:
-    def __init__(self, config: DNSConfig, logger: logging.Logger, clock=time.monotonic):
+    """Transparent DNS redirect handled inside DPIveil's main WinDivert loop.
+
+    Windows keeps its configured DNS server. Outbound UDP/53 packets are rewritten
+    to a trusted resolver and replies are rewritten back so the DNS client sees
+    the original resolver address.
+    """
+
+    def __init__(
+        self,
+        config: DNSConfig,
+        logger: logging.Logger,
+        clock=time.monotonic,
+        answer_callback=None,
+    ):
         self.config = config
         self.logger = logger
         self.clock = clock
+        self.answer_callback = answer_callback
         self.pending = {}
         self._next_port = 54000
         self.ready = threading.Event()
@@ -88,16 +108,28 @@ class DNSRedirect:
         self.spoofed = 0
 
     def _cleanup(self, now):
-        self.pending = {key: record for key, record in self.pending.items()
-                        if now - record[2] <= self.config.max_age}
+        self.pending = {
+            key: record
+            for key, record in self.pending.items()
+            if now - record[2] <= self.config.max_age
+        }
+
+    def _observe_reply(self, payload: bytes):
+        if self.answer_callback is None:
+            return
+        host, addresses = parse_dns_addresses(payload)
+        if host and addresses:
+            try:
+                self.answer_callback(host, addresses)
+            except Exception as exc:
+                self.logger.debug("DNS answer callback failed: %s", exc)
 
     def process(self, packet):
         udp = packet.udp
         if udp is None:
             return packet
+
         payload = bytes(packet.payload or b"")
-        # For inbound packets src_addr is the resolver; the local destination
-        # determines which address family/mapping was used.
         local_addr = packet.dst_addr if packet.is_inbound else packet.src_addr
         family = ipaddress.ip_address(str(local_addr)).version
         resolver = self.config.ipv4_resolver if family == 4 else self.config.ipv6_resolver
@@ -107,15 +139,15 @@ class DNSRedirect:
 
         if packet.is_outbound and udp.dst_port == 53:
             parsed = question_key(payload, response=False)
-            if parsed is None or (str(packet.dst_addr) == resolver and port == 53):
+            if parsed is None:
                 return packet
+
             original_port = udp.src_port
             original_address = str(packet.dst_addr)
             prefix = (family, str(packet.src_addr))
             key = (family, str(packet.src_addr), original_port, *parsed)
+
             if key in self.pending and self.pending[key][0] != original_address:
-                # Parallel OS queries to different configured DNS servers can
-                # share an ID and source port. Give each upstream flow its own.
                 for _ in range(11536):
                     mapped_port = self._next_port
                     self._next_port = 54000 if self._next_port == 65535 else self._next_port + 1
@@ -127,10 +159,15 @@ class DNSRedirect:
                 else:
                     self.logger.error("DNS port mapping exhausted")
                     return packet
-            self.pending[key] = (original_address, udp.dst_port, now, original_port)
+
+            self.pending[key] = (original_address, 53, now, original_port)
             self.logger.info(
                 "DNS query redirect | %s:%s -> %s:%s | original DNS %s:53",
-                packet.src_addr, udp.src_port, resolver, port, original_address,
+                packet.src_addr,
+                udp.src_port,
+                resolver,
+                port,
+                original_address,
             )
             packet.ip.dst_addr = resolver
             udp.dst_port = port
@@ -139,32 +176,59 @@ class DNSRedirect:
             return packet
 
         if packet.is_inbound and udp.src_port in (53, port):
-            same_transaction = (len(payload) >= 2 and any(
-                key[:4] == (family, str(packet.dst_addr), udp.dst_port, payload[:2])
-                for key in self.pending))
+            same_transaction = (
+                len(payload) >= 2
+                and any(
+                    key[:4] == (
+                        family,
+                        str(packet.dst_addr),
+                        udp.dst_port,
+                        payload[:2],
+                    )
+                    for key in self.pending
+                )
+            )
             parsed = question_key(payload, response=True)
             if parsed is None:
                 return None if same_transaction else packet
+
             key = (family, str(packet.dst_addr), udp.dst_port, *parsed)
             record = self.pending.get(key)
             if record is None:
                 return None if same_transaction else packet
-            if str(ipaddress.ip_address(str(packet.src_addr))) != resolver or udp.src_port != port:
+
+            if (
+                str(ipaddress.ip_address(str(packet.src_addr))) != resolver
+                or udp.src_port != port
+            ):
                 self.spoofed += 1
-                self.logger.warning("Discarded unexpected DNS response | %s:%s", packet.src_addr, udp.src_port)
+                self.logger.warning(
+                    "Discarded unexpected DNS response | %s:%s",
+                    packet.src_addr,
+                    udp.src_port,
+                )
                 return None
+
             self.pending.pop(key, None)
+            self._observe_reply(payload)
             self.logger.info(
                 "DNS reply restore | %s:%s -> original DNS %s:%s | local:%s",
-                packet.src_addr, udp.src_port, record[0], record[1], record[3],
+                packet.src_addr,
+                udp.src_port,
+                record[0],
+                record[1],
+                record[3],
             )
             packet.ip.src_addr = record[0]
             udp.src_port = record[1]
             udp.dst_port = record[3]
             packet.recalculate_checksums()
             self.responses += 1
+
         return packet
 
+    # Kept for compatibility with standalone use/tests. DPIveil normally uses
+    # this object inside PacketEngine so DNS and TLS share one WinDivert handle.
     def _run(self):
         try:
             with pydivert.WinDivert(self.config.packet_filter, priority=1) as divert:
@@ -184,14 +248,24 @@ class DNSRedirect:
 
     def start(self):
         self._stopping = False
-        self._thread = threading.Thread(target=self._run, name="dpiveil-dns", daemon=True)
+        self._thread = threading.Thread(
+            target=self._run,
+            name="dpiveil-dns",
+            daemon=True,
+        )
         self._thread.start()
         if not self.ready.wait(timeout=5) or self.error or not self._thread.is_alive():
             self.stop()
-            raise RuntimeError(f"Could not start DNS redirect: {self.error or 'not ready'}")
-        self.logger.info("DNS redirect active | IPv4 %s:%s | IPv6 %s:%s",
-                         self.config.ipv4_resolver, self.config.ipv4_port,
-                         self.config.ipv6_resolver, self.config.ipv6_port)
+            raise RuntimeError(
+                f"Could not start DNS redirect: {self.error or 'not ready'}"
+            )
+        self.logger.info(
+            "DNS redirect active | IPv4 %s:%s | IPv6 %s:%s",
+            self.config.ipv4_resolver,
+            self.config.ipv4_port,
+            self.config.ipv6_resolver,
+            self.config.ipv6_port,
+        )
 
     def stop(self):
         self._stopping = True
@@ -203,12 +277,20 @@ class DNSRedirect:
                 pass
         if self._thread is not None:
             self._thread.join(timeout=5)
-        self.logger.info("DNS redirect: %s queries, %s replies, %s unexpected replies",
-                         self.queries, self.responses, self.spoofed)
+        self.logger.info(
+            "DNS redirect: %s queries, %s replies, %s unexpected replies",
+            self.queries,
+            self.responses,
+            self.spoofed,
+        )
 
 
 def flush_dns_cache():
-    result = subprocess.run(["ipconfig", "/flushdns"], capture_output=True,
-                            timeout=10, check=False)
+    result = subprocess.run(
+        ["ipconfig", "/flushdns"],
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
     if result.returncode != 0:
         raise OSError("ipconfig /flushdns failed; Windows DNS cache was not cleared")
