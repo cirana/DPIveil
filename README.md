@@ -21,6 +21,12 @@ python main.py
 
 Press `Ctrl+C` to stop DPIveil cleanly.
 
+## DNS yönlendirme
+
+Varsayılan profilde DPIveil, Windows'un giden IPv4/IPv6 **UDP/53** DNS sorgularını [GoodbyeDPI'nin yönlendirme yöntemine](https://github.com/ValdikSS/GoodbyeDPI) benzer biçimde yapılandırılmış çözümleyiciye yönlendirir; sorgu kimliği, soru ve istemci portu eşleşen yanıtların kaynak IP/portunu özgün DNS sunucusuna çevirip istemciye teslim eder. IPv4 hedefi `77.88.8.8:1253`, IPv6 hedefi `[2a02:6b8::feed:0ff]:1253` olarak ayarlıdır; [Yandex DNS](https://dns.yandex.com/) çözümleyici adreslerini yayınlar. DNS WinDivert katmanı otomatik HTTPS seçimi başlamadan açılır, ardından `ipconfig /flushdns` çalıştırılır. Açılışta DNS katmanı veya önbellek temizliği başarısız olursa DPIveil hata vererek durur.
+
+`profiles/default.json` içindeki `dns_redirect` bölümünden IPv4 ve IPv6 hedeflerini değiştirebilir veya `enabled: false` ile bu özelliği kapatabilirsiniz. Günlükte DNS sorgu/yanıt sayıları ve beklenmeyen yanıtlar gösterilir. DNS yönlendirme **yalnızca UDP/53** için geçerlidir; TCP/53 veya uygulamaların kendi DoH/DoT bağlantıları bu katmandan geçmez. UDP DNS şifreli ya da kriptografik olarak doğrulanmış değildir; standart dışı porta yönlendirme DNS müdahalesini azaltabilir ama ağ bu hedefi de engelliyor ya da taklit ediyorsa şifreli DNS kullanılması gerekir. TLS sertifika denetimi ve HSTS değiştirilmez. IPv6 çözümleyicisine erişiminiz yoksa IPv6 sorguları yanıt alamayabilir; çözümleyiciyi ağınıza uygun bir IPv6 adres/portuyla değiştirin.
+
 ## HTTPS stratejileri ve test
 
 DPIveil v0.7.0 açıldığında önce Windows'un mevcut DNS yanıtıyla Discord'a **doğrudan HTTPS** isteği gönderir. En az bir adreste sertifikası doğrulanan bir HTTPS yanıtı gelirse paket motorunu başlatmaz. Doğrudan erişim başarısızsa şifreli DNS ile doğrulanan IPv4 adreslerinde aşağıdaki adayları sırayla dener:

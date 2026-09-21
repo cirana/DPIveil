@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -12,6 +12,7 @@ class Profile:
     filter: str
     strategy: str
     strategy_options: dict[str, object]
+    dns_redirect: dict[str, object] = field(default_factory=dict)
 
 
 def load_profile(path: Path) -> Profile:
@@ -23,4 +24,5 @@ def load_profile(path: Path) -> Profile:
         filter=str(data["filter"]),
         strategy=str(data.get("strategy", "passthrough")),
         strategy_options=dict(data.get("strategy_options", {})),
+        dns_redirect=dict(data.get("dns_redirect", {})),
     )

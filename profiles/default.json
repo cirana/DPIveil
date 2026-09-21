@@ -1,6 +1,13 @@
 {
   "name": "Default",
   "description": "Automatically probe verified Discord HTTPS and select a session strategy.",
+  "dns_redirect": {
+    "enabled": true,
+    "ipv4_resolver": "77.88.8.8",
+    "ipv4_port": 1253,
+    "ipv6_resolver": "2a02:6b8::feed:0ff",
+    "ipv6_port": 1253
+  },
   "filter": "(outbound and tcp and tcp.DstPort == 443) or (inbound and tcp and tcp.SrcPort == 443 and (tcp.Syn or tcp.Rst))",
   "strategy": "auto",
   "strategy_options": {

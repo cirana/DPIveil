@@ -7,6 +7,7 @@ from pathlib import Path
 
 from dpiveil import __version__
 from dpiveil.autoselect import AutoConfig, SessionStrategy, direct_works, resolve_system, resolve_verified, test_candidates
+from dpiveil.dns_redirect import DNSConfig, DNSRedirect, flush_dns_cache
 from dpiveil.engine import PacketEngine
 from dpiveil.profiles import load_profile
 from dpiveil.strategies.tls_fragment import FragmentConfig, TLSClientHelloFragmentStrategy
@@ -121,6 +122,7 @@ def run() -> int:
     try:
         profile = load_profile(DEFAULT_PROFILE)
         strategy = build_strategy(profile)
+        dns_config = DNSConfig.from_options(profile.dns_redirect)
     except (OSError, KeyError, TypeError, ValueError) as exc:
         logger.error("Could not load default profile or strategy: %s", exc)
         return 1
@@ -135,8 +137,29 @@ def run() -> int:
         logger.info("Strategy mode: %s", mode)
     logger.info("Press Ctrl+C to stop.")
 
-    if profile.strategy == "auto":
-        return run_auto(profile, strategy, logger)
+    dns = None
+    if dns_config.enabled:
+        dns = DNSRedirect(dns_config, logger)
+        try:
+            dns.start()
+            flush_dns_cache()
+            logger.info("Windows DNS cache flushed.")
+        except (OSError, RuntimeError) as exc:
+            logger.error("DNS startup failed: %s", exc)
+            dns.stop()
+            return 1
+
+    try:
+        if profile.strategy == "auto":
+            return run_auto(profile, strategy, logger, dns)
+
+        return run_manual(profile, strategy, logger)
+    finally:
+        if dns is not None:
+            dns.stop()
+
+
+def run_manual(profile, strategy, logger) -> int:
 
     engine = PacketEngine(profile.filter, logger, strategy)
 
@@ -163,7 +186,7 @@ def run() -> int:
     return 0
 
 
-def run_auto(profile, session, logger) -> int:
+def run_auto(profile, session, logger, dns=None) -> int:
     config = AutoConfig.from_options(profile.strategy_options)
     try:
         try:
@@ -172,7 +195,17 @@ def run_auto(profile, session, logger) -> int:
             system_addresses = []
             logger.warning("System DNS failed: %s", exc)
         if system_addresses and direct_works(config, system_addresses, logger):
-            logger.info("Direct HTTPS works. No DPI packet engine is needed.")
+            logger.info("Direct HTTPS works. No TCP manipulation is needed.")
+            if dns is not None:
+                logger.info("DNS redirection remains active; press Ctrl+C to stop.")
+                try:
+                    while dns._thread.is_alive():
+                        dns._thread.join(timeout=0.5)
+                except KeyboardInterrupt:
+                    logger.info("Stopping DPIveil...")
+                if dns.error:
+                    logger.error("DNS redirection stopped: %s", dns.error)
+                    return 1
             return 0
         addresses = resolve_verified(config.host, config.timeout, config.max_ips)
         logger.info("Verified target addresses | %s | %s", config.host, ", ".join(addresses))
@@ -206,6 +239,9 @@ def run_auto(profile, session, logger) -> int:
             return 2
         logger.info("Active strategy for this session: %s", selected.name)
         while thread.is_alive():
+            if dns is not None and dns.error:
+                logger.error("DNS redirection stopped: %s", dns.error)
+                return 1
             thread.join(timeout=0.5)
         if errors:
             logger.error("WinDivert engine stopped: %s", errors[0])
