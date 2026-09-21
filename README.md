@@ -1,14 +1,104 @@
 # DPIveil
 
-DPIveil is a lightweight Windows command-line network traffic tool written in Python. It combines a temporary Windows DNS policy with WinDivert/PyDivert-based HTTPS strategy selection for Discord connectivity.
+DPIveil, Windows üzerinde Discord bağlantısında görülen DNS zehirleme ve HTTPS/TLS tabanlı DPI engellerini otomatik olarak aşmayı amaçlayan hafif bir araçtır.
 
-## Requirements
+Program açıldığında geçici DNS politikasını uygular, desteklenen DPI stratejilerini otomatik test eder ve o oturum için çalışan yöntemi seçer. Kullanıcının manuel strateji seçmesi gerekmez.
 
-- Windows 10/11
-- Python 3.10+
-- Administrator privileges
+> DPIveil yalnızca Windows 10/11 üzerinde çalışır ve yönetici yetkisi ister.
 
-## Setup
+## Kullanıcılar için hızlı başlangıç
+
+Release sürümünü kullanıyorsanız klasörde şu üç dosyanın birlikte bulunması yeterlidir:
+
+```text
+DPIveil.exe
+WinDivert64.dll
+WinDivert64.sys
+```
+
+`DPIveil.exe` dosyasını çalıştırın ve Windows'un yönetici izni isteğini onaylayın.
+
+DPIveil başlangıçta:
+
+1. Discord için geçici Windows DNS politikasını etkinleştirir.
+2. DNS önbelleğini temizler.
+3. Discord HTTPS bağlantısını test eder.
+4. Çalışan DPI stratejisini otomatik seçer.
+5. Seçilen stratejiyi program açık kaldığı sürece kullanır.
+
+Durdurmak için konsol penceresinde `Ctrl+C` kullanabilirsiniz.
+
+Program normal şekilde kapatıldığında oluşturduğu geçici DNS kurallarını kaldırır ve önceki DoH durumunu geri yükler.
+
+## Nasıl çalışıyor?
+
+DPIveil iki katmanı birlikte kullanır:
+
+### 1. DNS
+
+Discord alan adları Windows'un yerleşik **NRPT + DNS-over-HTTPS (DoH)** sistemi üzerinden güvenilir DNS çözümleyicisine yönlendirilir.
+
+Varsayılan yapılandırma:
+
+- DNS çözümleyici: `1.1.1.1`
+- DoH: `https://cloudflare-dns.com/dns-query`
+- Düz UDP DNS fallback: kapalı
+- Ağ bağdaştırıcısının DNS ayarları değiştirilmez
+- Yerel DNS proxy çalıştırılmaz
+- Başlangıçta ve çıkışta DNS cache temizlenir
+- DPIveil yalnızca kendi oluşturduğu NRPT kurallarını kaldırır
+
+TLS sertifika doğrulaması ve HSTS devre dışı bırakılmaz.
+
+### 2. DPI stratejisi
+
+DPIveil Discord'a doğrulanmış HTTPS bağlantıları göndererek aday stratejileri sırayla test eder.
+
+Varsayılan adaylar:
+
+```text
+multisplit-2
+multidisorder-2
+fake-ttl-1
+```
+
+İlk başarılı strateji o oturum için otomatik etkinleştirilir.
+
+Discord masaüstü istemcisinin bazı ek endpoint'leri de seçimden sonra tanılama amacıyla kontrol edilir. Bu kontroller strateji seçimini değiştirmez.
+
+## Loglar
+
+EXE sürümünde loglar uygulama klasörüne yazılmaz.
+
+Konum:
+
+```text
+%LOCALAPPDATA%\DPIveil\logs\dpiveil.log
+```
+
+Bir sorun bildirirken bu log dosyasını paylaşmak tanılamayı kolaylaştırır.
+
+## Antivirüs uyarıları hakkında
+
+DPIveil paket trafiğini işlemek için **WinDivert** kullanır.
+
+WinDivert meşru bir ağ sürücüsüdür ancak paket yakalama/değiştirme yeteneği nedeniyle bazı antivirüs ürünleri onu `RiskTool` veya benzeri düşük seviyeli bir uyarıyla işaretleyebilir.
+
+Örneğin Kaspersky şu tür bir sınıflandırma gösterebilir:
+
+```text
+not-a-virus:RiskTool.Multi.WinDivert
+```
+
+Bu sınıflandırma WinDivert'in doğrudan virüs olduğu anlamına gelmez; güvenlik yazılımının kötüye kullanılabilecek meşru araç kategorisidir.
+
+DPIveil dağıtımında WinDivert dosyaları EXE içine gizlenmez veya değiştirilmez. Release paketinde ayrı ve orijinal halleriyle tutulurlar.
+
+Antivirüsü kapatmanız önerilmez.
+
+## Kaynaktan çalıştırma
+
+Geliştirme sürümünü çalıştırmak için:
 
 ```powershell
 python -m venv .venv
@@ -17,23 +107,60 @@ pip install -r requirements.txt
 python main.py
 ```
 
-Press `Ctrl+C` to stop DPIveil cleanly.
+Gereksinimler:
 
-## DNS policy
+- Windows 10/11
+- Python 3.10+
+- Yönetici yetkisi
 
-The default profile uses Windows-native **NRPT + DoH** for Discord namespaces.
+## EXE oluşturma
 
-- Resolver: `1.1.1.1`
-- DoH template: `https://cloudflare-dns.com/dns-query`
-- Plain UDP fallback: disabled
-- Adapter DNS settings are not changed
-- No local DNS proxy is started
-- DNS cache is flushed when the temporary policy is applied and removed
-- DPIveil removes only the NRPT rules it created and restores the previous DoH entry state on shutdown
+Projeyi klonladıktan veya güncelledikten sonra:
 
-The Discord namespace list is shared by the DNS policy and the active session strategy through `dpiveil/constants.py`, so both layers use the same domain set.
+```powershell
+git pull
+.\scripts\build.ps1
+```
 
-The DNS policy is configured through `profiles/default.json`:
+Build scripti:
+
+- runtime bağımlılıklarını kurar
+- PyInstaller build bağımlılıklarını kurar
+- testleri çalıştırır
+- DPIveil'i tek EXE olarak paketler
+- WinDivert dosyalarını EXE'nin yanına kopyalar
+- üretilen dosyaların SHA-256 değerlerini gösterir
+
+Başarılı build sonucunda:
+
+```text
+dist\
+├── DPIveil.exe
+├── WinDivert64.dll
+└── WinDivert64.sys
+```
+
+Python runtime, DPIveil modülleri ve varsayılan profil `DPIveil.exe` içine gömülüdür. WinDivert DLL ve sürücüsü özellikle EXE dışında tutulur.
+
+## Testler
+
+Test paketini doğrudan çalıştırmak için:
+
+```powershell
+python -m unittest discover -s tests
+```
+
+Testler gerçek Windows DNS ayarlarını değiştirmeden strateji seçimi, DNS politika yaşam döngüsü, paket sınıflandırması ve strateji davranışlarını kontrol eder.
+
+## Yapılandırma
+
+Varsayılan profil:
+
+```text
+profiles/default.json
+```
+
+Örnek DNS yapılandırması:
 
 ```json
 {
@@ -41,30 +168,14 @@ The DNS policy is configured through `profiles/default.json`:
     "enabled": true,
     "resolver": "1.1.1.1",
     "doh_template": "https://cloudflare-dns.com/dns-query",
-    "allow_fallback_to_udp": false,
-    "domains": [
-      "discord.com",
-      "discord.gg"
-    ]
+    "allow_fallback_to_udp": false
   }
 }
 ```
 
-If `domains` is omitted, both the DNS policy and the automatic session strategy use the shared `DISCORD_DOMAINS` constant. A profile can still override the DNS namespace list explicitly. TLS certificate verification and HSTS are not disabled.
+`domains` alanı belirtilmezse DNS politikası ve otomatik strateji ortak `DISCORD_DOMAINS` listesini kullanır.
 
-## Automatic HTTPS strategy selection
-
-DPIveil obtains verified Discord IPv4 addresses through DNS-over-HTTPS while retaining normal TLS certificate validation. It then tests the configured candidates in priority order and selects the **first candidate that produces a verified Discord HTTPS response**.
-
-Default candidates:
-
-- `multisplit-2`
-- `multidisorder-2`
-- `fake-ttl-1`
-
-The selected strategy remains active for the current DPIveil session and is applied to Discord traffic. Discord addresses learned through the active Windows DNS policy are also tracked so the packet engine can protect relevant flows when SNI is unavailable.
-
-The default strategy configuration is in `profiles/default.json`:
+Varsayılan otomatik strateji yapılandırması:
 
 ```json
 {
@@ -82,43 +193,50 @@ The default strategy configuration is in `profiles/default.json`:
 }
 ```
 
-Desktop Discord endpoints are checked after selection for diagnostics. They do not determine which strategy wins.
-
-## Packet engine
-
-The WinDivert engine handles TCP/443 traffic used by the configured HTTPS strategies. It also records inbound SYN-ACK/RST fingerprints and can drop the specific suspect RST pattern observed on protected Discord flows.
-
-DNS is no longer intercepted in the packet engine. Windows handles Discord DNS through the native NRPT + DoH policy described above.
-
-## Project layout
+## Proje yapısı
 
 ```text
 dpiveil/
-  app.py          application lifecycle and orchestration
-  autoselect.py   verified HTTPS probing and session strategy selection
-  constants.py    shared Discord domain constants
-  dns_policy.py   temporary Windows NRPT + native DoH policy
-  engine.py       WinDivert packet engine
-  profiles.py     profile loading
-  strategies/     packet manipulation strategies
+  app.py          uygulama yaşam döngüsü
+  autoselect.py   otomatik HTTPS strateji testi ve seçimi
+  constants.py    ortak Discord alan adı listesi
+  dns_policy.py   Windows NRPT + DoH politikası
+  engine.py       WinDivert paket motoru
+  profiles.py     profil yükleme
+  strategies/     DPI stratejileri
+
+profiles/
+  default.json    varsayılan yapılandırma
+
+scripts/
+  build.ps1       Windows EXE build scripti
 ```
 
-## Tests
+## Release ve kod imzalama
 
-Run:
+`v*` biçiminde bir Git tag'i oluşturulduğunda Windows release workflow'u çalışır.
 
-```powershell
-python -m unittest discover -s tests
+Release build'lerinde `DPIveil.exe` Authenticode ile SHA-256 kullanılarak imzalanabilir ve timestamp uygulanır.
+
+GitHub repository secrets:
+
+```text
+WINDOWS_CERTIFICATE_BASE64
+WINDOWS_CERTIFICATE_PASSWORD
 ```
 
-Tests cover strategy selection, DNS policy lifecycle/configuration, packet classification and strategy behavior without changing the machine's real DNS configuration.
+Tag ile oluşturulan release'lerde bu sertifika bilgileri zorunludur. İmzalama başarısız olursa release yayınlanmaz.
 
+Workflow sonunda:
 
-## Windows EXE distribution
+```text
+DPIveil-windows-x64.zip
+DPIveil-windows-x64.zip.sha256
+```
 
-Release builds use PyInstaller in one-file mode for the DPIveil application. WinDivert is deliberately kept outside the executable so antivirus products can inspect the original third-party files independently.
+oluşturulur.
 
-The runtime folder contains only:
+ZIP'in içinde yalnızca şu üç runtime dosyası bulunur:
 
 ```text
 DPIveil.exe
@@ -126,25 +244,33 @@ WinDivert64.dll
 WinDivert64.sys
 ```
 
-`DPIveil.exe` contains the Python runtime, DPIveil modules, and the default profile. Logs are written under `%LOCALAPPDATA%\DPIveil\logs` in frozen builds, so the application folder stays clean.
+Kod imzalama ve doğrulanabilir release zinciri antivirüs false-positive ihtimalini azaltabilir ancak hiçbir antivirüs motoru için sıfır false-positive garantisi verilemez.
 
-Build locally with:
+## Teknik mimari
 
-```powershell
-.\scripts\build.ps1
+DPIveil'in temel akışı:
+
+```text
+Windows DNS
+   │
+   ├── NRPT
+   └── DoH
+       │
+       ▼
+Doğrulanmış Discord IP'leri
+       │
+       ▼
+Otomatik HTTPS strateji testi
+       │
+       ▼
+WinDivert paket motoru
+       │
+       ▼
+Oturum boyunca seçilen strateji
 ```
 
-The build script runs the test suite, creates the one-file EXE, and copies the unmodified WinDivert files bundled by the pinned PyDivert dependency next to it.
+WinDivert motoru TCP/443 trafiğini işler. DNS paketleri WinDivert üzerinden yakalanmaz; DNS tarafı Windows'un kendi NRPT + DoH altyapısına bırakılmıştır.
 
-### Signed releases
+---
 
-Tagging a version such as `v0.8.0` triggers `.github/workflows/windows-release.yml`. Tagged releases are rejected unless these repository secrets are configured:
-
-- `WINDOWS_CERTIFICATE_BASE64`: Base64-encoded Authenticode PFX certificate.
-- `WINDOWS_CERTIFICATE_PASSWORD`: Password for that PFX.
-
-The workflow signs `DPIveil.exe` with SHA-256 and a trusted timestamp, verifies that Windows reports the signature as valid, creates `DPIveil-windows-x64.zip`, generates a SHA-256 checksum, and publishes both to the GitHub Release.
-
-The ZIP itself contains only the three runtime files above. WinDivert binaries are copied without modification and are not re-signed by DPIveil.
-
-Code signing and clean release provenance reduce false-positive risk, but no publisher can guarantee that every antivirus engine will always classify a network interception tool correctly. If a vendor produces a false positive, submit the exact signed release and its SHA-256 to that vendor for reclassification rather than asking users to disable antivirus protection.
+DPIveil geliştirme aşamasındadır. Yeni sürümleri kullanırken release notlarını ve bilinen sorunları kontrol etmeniz önerilir.
