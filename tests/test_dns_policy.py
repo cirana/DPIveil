@@ -3,6 +3,7 @@ import logging
 import unittest
 from unittest.mock import patch
 
+from dpiveil.constants import DISCORD_DOMAINS
 from dpiveil.dns_policy import DNSPolicyConfig, WindowsDNSPolicy
 
 
@@ -12,7 +13,7 @@ class DNSPolicyTests(unittest.TestCase):
         self.assertEqual(config.resolver, "1.1.1.1")
         self.assertEqual(config.doh_template, "https://cloudflare-dns.com/dns-query")
         self.assertFalse(config.allow_fallback_to_udp)
-        self.assertIn("discord.com", config.domains)
+        self.assertEqual(config.domains, DISCORD_DOMAINS)
 
     def test_invalid_template_is_rejected(self):
         with self.assertRaises(ValueError):
