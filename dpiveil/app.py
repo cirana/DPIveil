@@ -8,7 +8,7 @@ from pathlib import Path
 
 from dpiveil import __version__
 from dpiveil.autoselect import AutoConfig, SessionStrategy, diagnose_desktop_endpoints, resolve_verified, test_candidates
-from dpiveil.dns_redirect import DNSConfig, DNSRedirect, flush_dns_cache
+from dpiveil.dns_redirect import DNSConfig, DNSRedirect, flush_dns_cache, repair_stale_loopback_dns
 from dpiveil.engine import PacketEngine
 from dpiveil.profiles import load_profile
 from dpiveil.strategies.tls_fragment import FragmentConfig, TLSClientHelloFragmentStrategy
@@ -167,6 +167,13 @@ def run() -> int:
     if mode:
         logger.info("Strategy mode: %s", mode)
     logger.info("Press Ctrl+C to stop.")
+
+    if dns_config.enabled:
+        try:
+            repair_stale_loopback_dns(logger)
+        except OSError as exc:
+            logger.error("Could not repair stale DNS settings: %s", exc)
+            return 1
 
     dns_callback = getattr(strategy, "record_dns_answer", None)
     dns = DNSRedirect(dns_config, logger, answer_callback=dns_callback) if dns_config.enabled else None
