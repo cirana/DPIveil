@@ -108,11 +108,12 @@ class PacketEngine:
                 if info.is_tls_client_hello and len(outgoing_packets) == 2:
                     self.stats.fragmented_client_hellos += 1
                     self.logger.info(
-                        "TLS split | %s:%s | SNI=%s | mode=%s | parts=%s+%s",
+                        "TLS split | %s:%s | SNI=%s | mode=%s | reverse=%s | send=%s+%s",
                         info.destination_ip,
                         info.destination_port,
                         info.sni or "?",
                         getattr(getattr(self.strategy, "config", None), "split_mode", "?"),
+                        getattr(getattr(self.strategy, "config", None), "reverse_order", False),
                         len(outgoing_packets[0].payload),
                         len(outgoing_packets[1].payload),
                     )

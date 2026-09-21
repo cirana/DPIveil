@@ -89,6 +89,24 @@ class FragmentTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             TLSClientHelloFragmentStrategy(FragmentConfig(32, "unknown"))
 
+    def test_reverse_order_only_for_selected_domain(self):
+        packet = FakePacket()
+        packet.payload = client_hello("discord.com")
+        packet.tcp.seq_num = 42000
+        FakePacket.source = packet
+        strategy = TLSClientHelloFragmentStrategy(
+            FragmentConfig(reverse_order=True, target_domains=("discord.com",))
+        )
+        second, first = strategy.process(packet)
+        self.assertGreater(second.tcp.seq_num, first.tcp.seq_num)
+        self.assertEqual(first.payload + second.payload, packet.payload)
+
+        packet.payload = client_hello("unrelated.example")
+        self.assertEqual(list(strategy.process(packet)), [packet])
+
+        packet.payload = client_hello("cdn.discord.com")
+        self.assertEqual(len(list(strategy.process(packet))), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

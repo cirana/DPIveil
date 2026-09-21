@@ -1,10 +1,12 @@
 {
   "name": "Default",
-  "description": "HTTPS profile using SNI-aware TLS ClientHello fragmentation.",
+  "description": "Experimental SNI-aware reverse fragmentation for selected hosts.",
   "filter": "(outbound and tcp and tcp.DstPort == 443) or (inbound and tcp and tcp.SrcPort == 443 and tcp.Rst)",
   "strategy": "tls_client_hello_fragment",
   "strategy_options": {
     "first_chunk_size": 32,
-    "split_mode": "sni"
+    "split_mode": "sni",
+    "reverse_order": true,
+    "target_domains": ["discord.com"]
   }
 }

@@ -12,6 +12,8 @@ from dpiveil.classifier import classify_packet
 class FragmentConfig:
     first_chunk_size: int = 32
     split_mode: str = "sni"
+    reverse_order: bool = False
+    target_domains: tuple[str, ...] = ()
 
 
 class TLSClientHelloFragmentStrategy:
@@ -23,6 +25,8 @@ class TLSClientHelloFragmentStrategy:
             raise ValueError("first_chunk_size must be positive")
         if self.config.split_mode not in {"sni", "fixed"}:
             raise ValueError("split_mode must be 'sni' or 'fixed'")
+        if any(not domain or domain != domain.lower() or domain.startswith(".") for domain in self.config.target_domains):
+            raise ValueError("target_domains must contain lowercase hostnames")
 
     @staticmethod
     def _clone_packet(packet):
@@ -38,6 +42,13 @@ class TLSClientHelloFragmentStrategy:
         payload = bytes(packet.payload or b"")
 
         if not info.is_tls_client_hello or packet.tcp is None:
+            yield packet
+            return
+
+        if self.config.target_domains and not any(
+            info.sni and (info.sni.lower() == domain or info.sni.lower().endswith("." + domain))
+            for domain in self.config.target_domains
+        ):
             yield packet
             return
 
@@ -68,5 +79,9 @@ class TLSClientHelloFragmentStrategy:
         first.recalculate_checksums()
         second.recalculate_checksums()
 
-        yield first
-        yield second
+        if self.config.reverse_order:
+            yield second
+            yield first
+        else:
+            yield first
+            yield second

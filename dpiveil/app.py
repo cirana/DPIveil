@@ -52,8 +52,19 @@ def build_strategy(profile):
     if profile.strategy == "tls_client_hello_fragment":
         chunk_size = int(profile.strategy_options.get("first_chunk_size", 32))
         split_mode = str(profile.strategy_options.get("split_mode", "sni"))
+        reverse_order = profile.strategy_options.get("reverse_order", False)
+        target_domains = profile.strategy_options.get("target_domains", [])
+        if not isinstance(reverse_order, bool):
+            raise ValueError("reverse_order must be a boolean")
+        if not isinstance(target_domains, list) or any(not isinstance(domain, str) for domain in target_domains):
+            raise ValueError("target_domains must be a list of hostnames")
         return TLSClientHelloFragmentStrategy(
-            FragmentConfig(first_chunk_size=chunk_size, split_mode=split_mode)
+            FragmentConfig(
+                first_chunk_size=chunk_size,
+                split_mode=split_mode,
+                reverse_order=reverse_order,
+                target_domains=tuple(target_domains),
+            )
         )
 
     raise ValueError(f"Unknown strategy: {profile.strategy}")
