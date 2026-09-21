@@ -112,3 +112,39 @@ python -m unittest discover -s tests
 ```
 
 Tests cover strategy selection, DNS policy lifecycle/configuration, packet classification and strategy behavior without changing the machine's real DNS configuration.
+
+
+## Windows EXE distribution
+
+Release builds use PyInstaller in one-file mode for the DPIveil application. WinDivert is deliberately kept outside the executable so antivirus products can inspect the original third-party files independently.
+
+The runtime folder contains only:
+
+```text
+DPIveil.exe
+WinDivert64.dll
+WinDivert64.sys
+```
+
+`DPIveil.exe` contains the Python runtime, DPIveil modules, and the default profile. Logs are written under `%LOCALAPPDATA%\DPIveil\logs` in frozen builds, so the application folder stays clean.
+
+Build locally with:
+
+```powershell
+.\scripts\build.ps1
+```
+
+The build script runs the test suite, creates the one-file EXE, and copies the unmodified WinDivert files bundled by the pinned PyDivert dependency next to it.
+
+### Signed releases
+
+Tagging a version such as `v0.8.0` triggers `.github/workflows/windows-release.yml`. Tagged releases are rejected unless these repository secrets are configured:
+
+- `WINDOWS_CERTIFICATE_BASE64`: Base64-encoded Authenticode PFX certificate.
+- `WINDOWS_CERTIFICATE_PASSWORD`: Password for that PFX.
+
+The workflow signs `DPIveil.exe` with SHA-256 and a trusted timestamp, verifies that Windows reports the signature as valid, creates `DPIveil-windows-x64.zip`, generates a SHA-256 checksum, and publishes both to the GitHub Release.
+
+The ZIP itself contains only the three runtime files above. WinDivert binaries are copied without modification and are not re-signed by DPIveil.
+
+Code signing and clean release provenance reduce false-positive risk, but no publisher can guarantee that every antivirus engine will always classify a network interception tool correctly. If a vendor produces a false positive, submit the exact signed release and its SHA-256 to that vendor for reclassification rather than asking users to disable antivirus protection.
