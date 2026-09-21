@@ -186,24 +186,6 @@ def run_manual(profile, strategy, logger, dns=None) -> int:
 
 def run_auto(profile, session, logger, dns=None) -> int:
     config = AutoConfig.from_options(profile.strategy_options)
-    try:
-        direct_ok, direct_details = health_check_direct(config, logger)
-        logger.info(
-            "Direct Discord health: %s",
-            ", ".join(f"{name}={'OK' if ok else 'FAIL'}" for name, ok in direct_details.items()),
-        )
-        if direct_ok:
-            logger.info("All Discord health checks work directly. No TCP manipulation is needed.")
-            return 0
-        addresses = resolve_verified(config.host, config.timeout, config.max_ips)
-        logger.info("Verified target addresses | %s | %s", config.host, ", ".join(addresses))
-    except KeyboardInterrupt:
-        logger.info("Selection interrupted.")
-        return 0
-    except (OSError, RuntimeError, ValueError) as exc:
-        logger.error("Cannot resolve a verified target: %s", exc)
-        return 1
-
     engine = PacketEngine(profile.filter, logger, session, dns_redirect=dns)
     errors = []
 
@@ -214,16 +196,35 @@ def run_auto(profile, session, logger, dns=None) -> int:
             errors.append(exc)
             engine.ready.set()
 
+    # DNS must already be intercepted before any hostname lookup/health check.
+    # Otherwise the first discord.com lookup can be poisoned and cached before
+    # the WinDivert DNS path is active.
     thread = threading.Thread(target=worker, name="dpiveil-divert", daemon=True)
     thread.start()
     try:
         if not engine.ready.wait(timeout=5) or errors or not thread.is_alive():
             logger.error("Could not start WinDivert engine: %s", errors or "engine not ready")
             return 1
-        selected, _ = test_candidates(config, session, logger, addresses)
-        if selected is None:
-            return 2
-        logger.info("Active strategy for this session: %s", selected.name)
+
+        if dns is not None:
+            flush_dns_cache()
+            logger.info("Windows DNS cache flushed after WinDivert became active.")
+
+        direct_ok, direct_details = health_check_direct(config, logger)
+        logger.info(
+            "Direct Discord health: %s",
+            ", ".join(f"{name}={'OK' if ok else 'FAIL'}" for name, ok in direct_details.items()),
+        )
+        if direct_ok:
+            logger.info("All Discord health checks work directly. No TCP manipulation is needed.")
+        else:
+            addresses = resolve_verified(config.host, config.timeout, config.max_ips)
+            logger.info("Verified target addresses | %s | %s", config.host, ", ".join(addresses))
+            selected, _ = test_candidates(config, session, logger, addresses)
+            if selected is None:
+                return 2
+            logger.info("Active strategy for this session: %s", selected.name)
+
         while thread.is_alive():
             thread.join(timeout=0.5)
         if errors:
@@ -234,6 +235,9 @@ def run_auto(profile, session, logger, dns=None) -> int:
     except KeyboardInterrupt:
         logger.info("Stopping DPIveil...")
         return 0
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.error("Auto selection failed: %s", exc)
+        return 1
     finally:
         engine.stop()
         thread.join(timeout=5)
