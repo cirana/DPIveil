@@ -3,10 +3,11 @@
   "description": "Automatically probe Discord HTTPS and apply the selected strategy to Discord services.",
   "dns_redirect": {
     "enabled": true,
-    "ipv4_resolver": "77.88.8.8",
-    "ipv4_port": 1253,
-    "ipv6_resolver": "2a02:6b8::feed:0ff",
-    "ipv6_port": 1253
+    "listen_host": "127.0.0.1",
+    "listen_port": 53,
+    "upstream_ipv4": "1.1.1.1",
+    "upstream_port": 53,
+    "timeout": 4
   },
   "filter": "(outbound and tcp and tcp.DstPort == 443) or (inbound and tcp and tcp.SrcPort == 443 and (tcp.Syn or tcp.Rst))",
   "strategy": "auto",
