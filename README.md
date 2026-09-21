@@ -1,8 +1,6 @@
 # DPIveil
 
-DPIveil is a lightweight Windows command-line network traffic tool written in Python.
-
-The project is currently in its initial development stage. The first milestone is a stable CLI core with administrator checks, profile loading, logging, graceful shutdown, and WinDivert/PyDivert integration.
+DPIveil is a lightweight Windows command-line network traffic tool written in Python. It combines a temporary Windows DNS policy with WinDivert/PyDivert-based HTTPS strategy selection for Discord connectivity.
 
 ## Requirements
 
@@ -21,23 +19,52 @@ python main.py
 
 Press `Ctrl+C` to stop DPIveil cleanly.
 
-## DNS yönlendirme
+## DNS policy
 
-Varsayılan profilde DPIveil, Windows'un giden IPv4/IPv6 **UDP/53** DNS sorgularını [GoodbyeDPI'nin yönlendirme yöntemine](https://github.com/ValdikSS/GoodbyeDPI) benzer biçimde yapılandırılmış çözümleyiciye yönlendirir; sorgu kimliği, soru ve istemci portu eşleşen yanıtların kaynak IP/portunu özgün DNS sunucusuna çevirip istemciye teslim eder. IPv4 hedefi `77.88.8.8:1253`, IPv6 hedefi `[2a02:6b8::feed:0ff]:1253` olarak ayarlıdır; [Yandex DNS](https://dns.yandex.com/) çözümleyici adreslerini yayınlar. DNS WinDivert katmanı otomatik HTTPS seçimi başlamadan açılır, ardından `ipconfig /flushdns` çalıştırılır. Açılışta DNS katmanı veya önbellek temizliği başarısız olursa DPIveil hata vererek durur.
+The default profile uses Windows-native **NRPT + DoH** for Discord namespaces.
 
-`profiles/default.json` içindeki `dns_redirect` bölümünden IPv4 ve IPv6 hedeflerini değiştirebilir veya `enabled: false` ile bu özelliği kapatabilirsiniz. Günlükte DNS sorgu/yanıt sayıları ve beklenmeyen yanıtlar gösterilir. DNS yönlendirme **yalnızca UDP/53** için geçerlidir; TCP/53 veya uygulamaların kendi DoH/DoT bağlantıları bu katmandan geçmez. UDP DNS şifreli ya da kriptografik olarak doğrulanmış değildir; standart dışı porta yönlendirme DNS müdahalesini azaltabilir ama ağ bu hedefi de engelliyor ya da taklit ediyorsa şifreli DNS kullanılması gerekir. TLS sertifika denetimi ve HSTS değiştirilmez. IPv6 çözümleyicisine erişiminiz yoksa IPv6 sorguları yanıt alamayabilir; çözümleyiciyi ağınıza uygun bir IPv6 adres/portuyla değiştirin.
+- Resolver: `1.1.1.1`
+- DoH template: `https://cloudflare-dns.com/dns-query`
+- Plain UDP fallback: disabled
+- Adapter DNS settings are not changed
+- No local DNS proxy is started
+- DNS cache is flushed when the temporary policy is applied and removed
+- DPIveil removes only the NRPT rules it created and restores the previous DoH entry state on shutdown
 
-## HTTPS stratejileri ve test
+The Discord namespace list is shared by the DNS policy and the active session strategy through `dpiveil/constants.py`, so both layers use the same domain set.
 
-DPIveil v0.7.0 açıldığında önce Windows'un mevcut DNS yanıtıyla Discord'a **doğrudan HTTPS** isteği gönderir. En az bir adreste sertifikası doğrulanan bir HTTPS yanıtı gelirse paket motorunu başlatmaz. Doğrudan erişim başarısızsa şifreli DNS ile doğrulanan IPv4 adreslerinde aşağıdaki adayları sırayla dener:
+The DNS policy is configured through `profiles/default.json`:
 
-- `multisplit`: TLS ClientHello'yu sabit TCP payload konumundan böler. Blockcheck'in ilk tercihi olan `--dpi-desync=multisplit --dpi-desync-split-pos=2` karşılığıdır.
-- `multidisorder`: aynı bölmeyi yapar ancak ikinci TCP parçasını önce gönderir. Blockcheck'te `--dpi-desync=multidisorder --dpi-desync-split-pos=2` çalışmıştır.
-- `fake_ttl`: gerçek ClientHello'dan önce aynı TLS yapısını taşıyan, SNI içeriği değiştirilmiş ve düşük TTL'li bir sahte paket gönderir. Blockcheck'teki `--dpi-desync=fake --dpi-desync-ttl=1` fikrinin DPIveil uyarlamasıdır.
+```json
+{
+  "dns_policy": {
+    "enabled": true,
+    "resolver": "1.1.1.1",
+    "doh_template": "https://cloudflare-dns.com/dns-query",
+    "allow_fallback_to_udp": false,
+    "domains": [
+      "discord.com",
+      "discord.gg"
+    ]
+  }
+}
+```
 
-Her aday için yalnızca TCP bağlantısı veya paket gönderimi yeterli değildir: TLS sertifikası `discord.com` için doğrulanmalı ve sunucu geçerli bir HTTP yanıtı vermelidir. Birden fazla aday çalışırsa önce daha çok IP'de yanıt veren, eşitlikte daha düşük `priority` değerine sahip olan seçilir. `profiles/default.json` aday listesinden yeni bir aday eklenebilir; desteklenen `kind` değerleri `multisplit`, `multidisorder`, `fake_ttl` şeklindedir. Bir aday başarısızsa diğerleri de denenir. Hiçbiri çalışmazsa paket motoru durdurulur ve açıkça hata yazılır.
+The full default domain set is kept in the profile. TLS certificate verification and HSTS are not disabled.
 
-Varsayılan profil:
+## Automatic HTTPS strategy selection
+
+DPIveil obtains verified Discord IPv4 addresses through DNS-over-HTTPS while retaining normal TLS certificate validation. It then tests the configured candidates in priority order and selects the **first candidate that produces a verified Discord HTTPS response**.
+
+Default candidates:
+
+- `multisplit-2`
+- `multidisorder-2`
+- `fake-ttl-1`
+
+The selected strategy remains active for the current DPIveil session and is applied to Discord traffic. Discord addresses learned through the active Windows DNS policy are also tracked so the packet engine can protect relevant flows when SNI is unavailable.
+
+The default strategy configuration is in `profiles/default.json`:
 
 ```json
 {
@@ -55,20 +82,33 @@ Varsayılan profil:
 }
 ```
 
-Problar yalnızca geçici deneme bağlantısının kaynak TCP portuna uygulanır. Seçilen yöntem oturumun geri kalanında `discord.com` ve alt alan adları için kullanılır. Normal uygulamalar sistem DNS ayarlarını kullanmaya devam eder; DNS yanıtları zehirleniyorsa Windows veya tarayıcıda şifreli DNS ayarı ayrıca gereklidir.
+Desktop Discord endpoints are checked after selection for diagnostics. They do not determine which strategy wins.
 
-Tek stratejiyle elle çalışmak için `zapret_compat`, eski SNI bölme stratejisi için `tls_client_hello_fragment` profil seçeneği korunmuştur. Otomatik strateji seçiminin Windows üzerinde gerçek ağda henüz doğrulanmadığını dikkate alın.
+## Packet engine
 
-### Test notları
+The WinDivert engine handles TCP/443 traffic used by the configured HTTPS strategies. It also records inbound SYN-ACK/RST fingerprints and can drop the specific suspect RST pattern observed on protected Discord flows.
 
-Blockcheck sonucunda Discord için IPv4 TCP/443 bağlantısı kurulabiliyor; TLS 1.2 bypass olmadan başarısız olurken `multisplit`, `multidisorder`, `fake ttl=1` ve başka bazı desync varyasyonları çalışmıştır. TLS 1.3 ise testte bypass olmadan çalışmıştır. HTTP/3/QUIC için ayrı olarak `ipfrag2` yöntemi çalışmıştır; DPIveil'in mevcut motoru TCP odaklı olduğu için UDP/QUIC `ipfrag2` henüz bu sürüme eklenmemiştir.
+DNS is no longer intercepted in the packet engine. Windows handles Discord DNS through the native NRPT + DoH policy described above.
 
-Blockcheck başka bir DPI bypass yazılımı açıkken çalıştırılırsa sonuçlar kirlenebilir. Testten önce DPIveil, Zapret/GoodbyeDPI ve diğer WinDivert tabanlı bypass süreçlerini kapatın.
+## Project layout
 
-Windows DNS sorgusunu DPIveil TLS paketini görmeden önce yapar. Yanlış adrese yönlendirilmiş bir DNS sonucunu paket parçalama düzeltemez. Sadece curl denemesinde şifreli DNS kullanmak için DPIveil çalışırken ayrı bir terminalde aşağıdaki komutu çalıştırın:
-
-```powershell
-curl.exe -4 --http1.1 --doh-url https://cloudflare-dns.com/dns-query --resolve cloudflare-dns.com:443:1.1.1.1 --connect-timeout 10 --max-time 20 -I -v https://discord.com/
+```text
+dpiveil/
+  app.py          application lifecycle and orchestration
+  autoselect.py   verified HTTPS probing and session strategy selection
+  constants.py    shared Discord domain constants
+  dns_policy.py   temporary Windows NRPT + native DoH policy
+  engine.py       WinDivert packet engine
+  profiles.py     profile loading
+  strategies/     packet manipulation strategies
 ```
 
-Normal IPv4 HTTPS bağlantısını da `curl.exe -4 -I -v https://www.cloudflare.com/` ile kontrol edin. DPIveil günlüğündeki strateji satırları paket manipülasyonunun denendiğini gösterir; tek başına erişimin başarıyla açıldığını kanıtlamaz.
+## Tests
+
+Run:
+
+```powershell
+python -m unittest discover -s tests
+```
+
+Tests cover strategy selection, DNS policy lifecycle/configuration, packet classification and strategy behavior without changing the machine's real DNS configuration.
