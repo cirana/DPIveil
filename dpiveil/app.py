@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
 from pathlib import Path
 
 from dpiveil import __version__
+from dpiveil.autoselect import AutoConfig, SessionStrategy, direct_works, resolve_system, resolve_verified, test_candidates
 from dpiveil.engine import PacketEngine
 from dpiveil.profiles import load_profile
 from dpiveil.strategies.tls_fragment import FragmentConfig, TLSClientHelloFragmentStrategy
@@ -59,6 +61,9 @@ def _target_domains(options) -> tuple[str, ...]:
 
 
 def build_strategy(profile):
+    if profile.strategy == "auto":
+        config = AutoConfig.from_options(profile.strategy_options)
+        return SessionStrategy(config.host)
     if profile.strategy == "tls_client_hello_fragment":
         chunk_size = int(profile.strategy_options.get("first_chunk_size", 32))
         split_mode = str(profile.strategy_options.get("split_mode", "sni"))
@@ -130,6 +135,9 @@ def run() -> int:
         logger.info("Strategy mode: %s", mode)
     logger.info("Press Ctrl+C to stop.")
 
+    if profile.strategy == "auto":
+        return run_auto(profile, strategy, logger)
+
     engine = PacketEngine(profile.filter, logger, strategy)
 
     try:
@@ -153,6 +161,65 @@ def run() -> int:
         logger.info("DPIveil stopped cleanly.")
 
     return 0
+
+
+def run_auto(profile, session, logger) -> int:
+    config = AutoConfig.from_options(profile.strategy_options)
+    try:
+        try:
+            system_addresses = resolve_system(config.host, config.max_ips)
+        except OSError as exc:
+            system_addresses = []
+            logger.warning("System DNS failed: %s", exc)
+        if system_addresses and direct_works(config, system_addresses, logger):
+            logger.info("Direct HTTPS works. No DPI packet engine is needed.")
+            return 0
+        addresses = resolve_verified(config.host, config.timeout, config.max_ips)
+        logger.info("Verified target addresses | %s | %s", config.host, ", ".join(addresses))
+        if system_addresses and not set(system_addresses).intersection(addresses):
+            logger.warning("System DNS differs from verified DNS; configure encrypted DNS for normal applications.")
+    except KeyboardInterrupt:
+        logger.info("Selection interrupted.")
+        return 0
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.error("Cannot resolve a verified target: %s", exc)
+        return 1
+
+    engine = PacketEngine(profile.filter, logger, session)
+    errors = []
+
+    def worker():
+        try:
+            engine.run()
+        except Exception as exc:
+            errors.append(exc)
+            engine.ready.set()
+
+    thread = threading.Thread(target=worker, name="dpiveil-divert", daemon=True)
+    thread.start()
+    try:
+        if not engine.ready.wait(timeout=5) or errors or not thread.is_alive():
+            logger.error("Could not start WinDivert engine: %s", errors or "engine not ready")
+            return 1
+        selected, _ = test_candidates(config, session, logger, addresses)
+        if selected is None:
+            return 2
+        logger.info("Active strategy for this session: %s", selected.name)
+        while thread.is_alive():
+            thread.join(timeout=0.5)
+        if errors:
+            logger.error("WinDivert engine stopped: %s", errors[0])
+            return 1
+        logger.error("WinDivert engine stopped unexpectedly.")
+        return 1
+    except KeyboardInterrupt:
+        logger.info("Stopping DPIveil...")
+        return 0
+    finally:
+        engine.stop()
+        thread.join(timeout=5)
+        logger.info("Final stats: %s packets | %s bytes | %s send errors",
+                    f"{engine.stats.packets:,}", f"{engine.stats.bytes:,}", engine.stats.send_errors)
 
 
 if __name__ == "__main__":

@@ -25,6 +25,7 @@ class FakePacket:
         self.timestamp = timestamp
         self.payload = other.payload if other else b""
         self.tcp = FakeTCP(other.tcp.seq_num if other else 0)
+        self.ip = types.SimpleNamespace(ttl=64)
         self.dst_addr = "192.0.2.1"
         self.src_addr = "192.0.2.1"
         self.is_inbound = False

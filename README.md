@@ -23,29 +23,35 @@ Press `Ctrl+C` to stop DPIveil cleanly.
 
 ## HTTPS stratejileri ve test
 
-DPIveil v0.6.0 ile birlikte Zapret `blockcheck` sonucunda bu ağda Discord TLS 1.2 için çalışan yöntemlerden üçü programa doğrudan uyarlanmıştır:
+DPIveil v0.7.0 açıldığında önce Windows'un mevcut DNS yanıtıyla Discord'a **doğrudan HTTPS** isteği gönderir. En az bir adreste sertifikası doğrulanan bir HTTPS yanıtı gelirse paket motorunu başlatmaz. Doğrudan erişim başarısızsa şifreli DNS ile doğrulanan IPv4 adreslerinde aşağıdaki adayları sırayla dener:
 
 - `multisplit`: TLS ClientHello'yu sabit TCP payload konumundan böler. Blockcheck'in ilk tercihi olan `--dpi-desync=multisplit --dpi-desync-split-pos=2` karşılığıdır.
 - `multidisorder`: aynı bölmeyi yapar ancak ikinci TCP parçasını önce gönderir. Blockcheck'te `--dpi-desync=multidisorder --dpi-desync-split-pos=2` çalışmıştır.
 - `fake_ttl`: gerçek ClientHello'dan önce aynı TLS yapısını taşıyan, SNI içeriği değiştirilmiş ve düşük TTL'li bir sahte paket gönderir. Blockcheck'teki `--dpi-desync=fake --dpi-desync-ttl=1` fikrinin DPIveil uyarlamasıdır.
 
-Varsayılan profil `multisplit` + `split_pos=2` kullanır ve yalnızca `discord.com` ile alt alan adlarını hedefler:
+Her aday için yalnızca TCP bağlantısı veya paket gönderimi yeterli değildir: TLS sertifikası `discord.com` için doğrulanmalı ve sunucu geçerli bir HTTP yanıtı vermelidir. Birden fazla aday çalışırsa önce daha çok IP'de yanıt veren, eşitlikte daha düşük `priority` değerine sahip olan seçilir. `profiles/default.json` aday listesinden yeni bir aday eklenebilir; desteklenen `kind` değerleri `multisplit`, `multidisorder`, `fake_ttl` şeklindedir. Bir aday başarısızsa diğerleri de denenir. Hiçbiri çalışmazsa paket motoru durdurulur ve açıkça hata yazılır.
+
+Varsayılan profil:
 
 ```json
 {
-  "strategy": "zapret_compat",
+  "strategy": "auto",
   "strategy_options": {
-    "mode": "multisplit",
-    "split_pos": 2,
-    "fake_ttl": 1,
-    "target_domains": ["discord.com"]
+    "host": "discord.com",
+    "timeout": 6,
+    "max_ips": 2,
+    "candidates": [
+      {"name": "multisplit-2", "kind": "multisplit", "priority": 1, "split_pos": 2},
+      {"name": "multidisorder-2", "kind": "multidisorder", "priority": 2, "split_pos": 2},
+      {"name": "fake-ttl-1", "kind": "fake_ttl", "priority": 3, "ttl": 1}
+    ]
   }
 }
 ```
 
-Diğer yöntemi denemek için yalnızca `profiles/default.json` içindeki `mode` değerini `multidisorder` veya `fake_ttl` yapın. `fake_ttl` kullanırken `fake_ttl` değeri de değiştirilebilir.
+Problar yalnızca geçici deneme bağlantısının kaynak TCP portuna uygulanır. Seçilen yöntem oturumun geri kalanında `discord.com` ve alt alan adları için kullanılır. Normal uygulamalar sistem DNS ayarlarını kullanmaya devam eder; DNS yanıtları zehirleniyorsa Windows veya tarayıcıda şifreli DNS ayarı ayrıca gereklidir.
 
-Eski SNI-aware parçalama stratejisi kaldırılmadı. Geri dönmek için profil stratejisini `tls_client_hello_fragment` yapabilirsiniz.
+Tek stratejiyle elle çalışmak için `zapret_compat`, eski SNI bölme stratejisi için `tls_client_hello_fragment` profil seçeneği korunmuştur. Otomatik strateji seçiminin Windows üzerinde gerçek ağda henüz doğrulanmadığını dikkate alın.
 
 ### Test notları
 

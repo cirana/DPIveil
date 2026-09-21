@@ -1,12 +1,16 @@
 {
   "name": "Default",
-  "description": "Blockcheck-proven Discord TLS desync profile using a Zapret-compatible split.",
+  "description": "Automatically probe verified Discord HTTPS and select a session strategy.",
   "filter": "(outbound and tcp and tcp.DstPort == 443) or (inbound and tcp and tcp.SrcPort == 443 and (tcp.Syn or tcp.Rst))",
-  "strategy": "zapret_compat",
+  "strategy": "auto",
   "strategy_options": {
-    "mode": "multisplit",
-    "split_pos": 2,
-    "fake_ttl": 1,
-    "target_domains": ["discord.com"]
+    "host": "discord.com",
+    "timeout": 6,
+    "max_ips": 2,
+    "candidates": [
+      {"name": "multisplit-2", "kind": "multisplit", "priority": 1, "split_pos": 2},
+      {"name": "multidisorder-2", "kind": "multidisorder", "priority": 2, "split_pos": 2},
+      {"name": "fake-ttl-1", "kind": "fake_ttl", "priority": 3, "ttl": 1}
+    ]
   }
 }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from dataclasses import dataclass
 
@@ -43,6 +44,16 @@ class PacketEngine:
         self._last_report = time.monotonic()
         self._syn_acks: dict[tuple[str, int], tuple[int, int, float]] = {}
         self._protected_flows: dict[tuple[str, int], float] = {}
+        self.ready = threading.Event()
+        self._divert = None
+
+    def stop(self) -> None:
+        divert = self._divert
+        if divert is not None and getattr(divert, "is_open", True):
+            try:
+                divert.close()
+            except OSError:
+                pass
 
     def _report_if_needed(self) -> None:
         now = time.monotonic()
@@ -70,7 +81,9 @@ class PacketEngine:
         self.logger.info("Strategy: %s", self.strategy.name)
 
         with pydivert.WinDivert(self.packet_filter) as divert:
+            self._divert = divert
             self.logger.info("WinDivert engine is active.")
+            self.ready.set()
 
             for packet in divert:
                 self.stats.packets += 1
@@ -164,12 +177,11 @@ class PacketEngine:
                 if info.is_tls_client_hello and len(outgoing_packets) == 2:
                     self.stats.fragmented_client_hellos += 1
                     self.logger.info(
-                        "TLS split | %s:%s | SNI=%s | mode=%s | reverse=%s | send=%s+%s",
+                        "TLS strategy | %s:%s | SNI=%s | strategy=%s | send=%s+%s",
                         info.destination_ip,
                         info.destination_port,
                         info.sni or "?",
-                        getattr(getattr(self.strategy, "config", None), "split_mode", "?"),
-                        getattr(getattr(self.strategy, "config", None), "reverse_order", False),
+                        self.strategy.name,
                         len(outgoing_packets[0].payload),
                         len(outgoing_packets[1].payload),
                     )
