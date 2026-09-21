@@ -35,5 +35,7 @@ class CandidateStrategy:
             target_domains=self.domains,
         ))
 
-    def process(self, packet):
+    def process(self, packet, force_ip=False):
+        if force_ip:
+            return self._strategy.process_forced(packet)
         return self._strategy.process(packet)
