@@ -132,7 +132,7 @@ class AutoTests(unittest.TestCase):
         session.set_probe(None)
         self.assertEqual(list(session.process(packet)), [packet])
 
-        def success(host, ip, path, timeout, on_connected):
+        def success(host, ip, path, timeout, on_connected, accept=None):
             on_connected(51234)
             packet.tcp.src_port = 51234
             session.process(packet)
