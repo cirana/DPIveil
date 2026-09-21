@@ -4,7 +4,6 @@ import json
 import logging
 import sys
 import threading
-from pathlib import Path
 
 from dpiveil import __version__
 from dpiveil.autoselect import (
