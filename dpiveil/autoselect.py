@@ -323,10 +323,13 @@ def test_candidates(config, session, logger, addresses=None, probe=https_request
             candidate.name, passed, required,
         )
 
+    # Web access is the hard requirement. Extra desktop checks are diagnostic:
+    # do not leave Discord completely unmodified just because an auxiliary
+    # endpoint (updates/gateway) rejects a synthetic health probe.
     working = [c for c in config.candidates
-               if results[c.name] == len(config.health_checks)]
+               if details[c.name].get("web", False)]
     if not working:
-        logger.error("No candidate passed all Discord health checks; no strategy selected.")
+        logger.error("No candidate passed the Discord web health check; no strategy selected.")
         return None, details
 
     selected = min(working, key=lambda c: (c.priority, c.name))
