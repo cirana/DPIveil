@@ -7,7 +7,7 @@ from pathlib import Path
 
 from dpiveil import __version__
 from dpiveil.autoselect import AutoConfig, SessionStrategy, diagnose_desktop_endpoints, resolve_verified, test_candidates
-from dpiveil.dns_redirect import DNSConfig, DNSRedirect, flush_dns_cache
+from dpiveil.dns_proxy import DNSProxyConfig, LocalDNSProxy
 from dpiveil.engine import PacketEngine
 from dpiveil.profiles import load_profile
 from dpiveil.strategies.tls_fragment import FragmentConfig, TLSClientHelloFragmentStrategy
@@ -122,7 +122,7 @@ def run() -> int:
     try:
         profile = load_profile(DEFAULT_PROFILE)
         strategy = build_strategy(profile)
-        dns_config = DNSConfig.from_options(profile.dns_redirect)
+        dns_config = DNSProxyConfig.from_options(profile.dns_redirect)
     except (OSError, KeyError, TypeError, ValueError) as exc:
         logger.error("Could not load default profile or strategy: %s", exc)
         return 1
@@ -138,24 +138,28 @@ def run() -> int:
     logger.info("Press Ctrl+C to stop.")
 
     dns_callback = getattr(strategy, "record_dns_answer", None)
-    dns = (
-        DNSRedirect(dns_config, logger, answer_callback=dns_callback)
-        if dns_config.enabled
-        else None
-    )
+    dns = LocalDNSProxy(dns_config, logger, answer_callback=dns_callback) if dns_config.enabled else None
+    if dns is not None:
+        try:
+            dns.start()
+        except (OSError, RuntimeError, ValueError) as exc:
+            logger.error("DNS startup failed: %s", exc)
+            return 1
 
-    if profile.strategy == "auto":
-        return run_auto(profile, strategy, logger, dns)
+    try:
+        if profile.strategy == "auto":
+            return run_auto(profile, strategy, logger, dns)
 
-    return run_manual(profile, strategy, logger, dns)
+        return run_manual(profile, strategy, logger, dns)
+    finally:
+        if dns is not None:
+            dns.stop()
 
 
 def run_manual(profile, strategy, logger, dns=None) -> int:
-    engine = PacketEngine(profile.filter, logger, strategy, dns_redirect=dns)
+    engine = PacketEngine(profile.filter, logger, strategy)
 
     try:
-        if dns is not None:
-            flush_dns_cache()
         engine.run()
     except KeyboardInterrupt:
         print()
@@ -173,13 +177,6 @@ def run_manual(profile, strategy, logger, dns=None) -> int:
             engine.stats.suspect_resets_dropped,
             engine.stats.send_errors,
         )
-        if dns is not None:
-            logger.info(
-                "DNS redirect: %s queries | %s replies | %s unexpected replies",
-                dns.queries,
-                dns.responses,
-                dns.spoofed,
-            )
         logger.info("DPIveil stopped cleanly.")
 
     return 0
@@ -187,7 +184,7 @@ def run_manual(profile, strategy, logger, dns=None) -> int:
 
 def run_auto(profile, session, logger, dns=None) -> int:
     config = AutoConfig.from_options(profile.strategy_options)
-    engine = PacketEngine(profile.filter, logger, session, dns_redirect=dns)
+    engine = PacketEngine(profile.filter, logger, session)
     errors = []
 
     def worker():
@@ -204,19 +201,6 @@ def run_auto(profile, session, logger, dns=None) -> int:
             logger.error("Could not start WinDivert engine: %s", errors or "engine not ready")
             return 1
 
-        # Flush only after the combined DNS/TLS WinDivert handle is active.
-        # The PC keeps its existing DNS configuration; subsequent UDP/53 queries
-        # are transparently redirected inside PacketEngine.
-        if dns is not None:
-            flush_dns_cache()
-            logger.info(
-                "Transparent DNS redirect active | IPv4 %s:%s | IPv6 %s:%s",
-                dns.config.ipv4_resolver,
-                dns.config.ipv4_port,
-                dns.config.ipv6_resolver,
-                dns.config.ipv6_port,
-            )
-
         addresses = resolve_verified(config.host, config.timeout, config.max_ips)
         logger.info("Verified target addresses | %s | %s", config.host, ", ".join(addresses))
         selected, _ = test_candidates(config, session, logger, addresses)
@@ -228,10 +212,7 @@ def run_auto(profile, session, logger, dns=None) -> int:
         if desktop_details:
             logger.info(
                 "Desktop Discord diagnostics: %s",
-                ", ".join(
-                    f"{name}={'OK' if ok else 'FAIL'}"
-                    for name, ok in desktop_details.items()
-                ),
+                ", ".join(f"{name}={'OK' if ok else 'FAIL'}" for name, ok in desktop_details.items()),
             )
 
         while thread.is_alive():
@@ -256,13 +237,6 @@ def run_auto(profile, session, logger, dns=None) -> int:
             f"{engine.stats.bytes:,}",
             engine.stats.send_errors,
         )
-        if dns is not None:
-            logger.info(
-                "DNS redirect: %s queries | %s replies | %s unexpected replies",
-                dns.queries,
-                dns.responses,
-                dns.spoofed,
-            )
 
 
 if __name__ == "__main__":
