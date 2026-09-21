@@ -137,31 +137,29 @@ def run() -> int:
         logger.info("Strategy mode: %s", mode)
     logger.info("Press Ctrl+C to stop.")
 
-    dns = None
-    if dns_config.enabled:
-        dns = DNSRedirect(dns_config, logger)
+    dns = DNSRedirect(dns_config, logger) if dns_config.enabled else None
+    if dns is not None:
         try:
-            dns.start()
             flush_dns_cache()
             logger.info("Windows DNS cache flushed.")
-        except (OSError, RuntimeError) as exc:
+        except OSError as exc:
             logger.error("DNS startup failed: %s", exc)
-            dns.stop()
             return 1
 
     try:
         if profile.strategy == "auto":
             return run_auto(profile, strategy, logger, dns)
 
-        return run_manual(profile, strategy, logger)
+        return run_manual(profile, strategy, logger, dns)
     finally:
         if dns is not None:
-            dns.stop()
+            logger.info("DNS redirect: %s queries, %s replies, %s unexpected replies",
+                        dns.queries, dns.responses, dns.spoofed)
 
 
-def run_manual(profile, strategy, logger) -> int:
+def run_manual(profile, strategy, logger, dns=None) -> int:
 
-    engine = PacketEngine(profile.filter, logger, strategy)
+    engine = PacketEngine(profile.filter, logger, strategy, dns_redirect=dns)
 
     try:
         engine.run()
@@ -196,16 +194,6 @@ def run_auto(profile, session, logger, dns=None) -> int:
         )
         if direct_ok:
             logger.info("All Discord health checks work directly. No TCP manipulation is needed.")
-            if dns is not None:
-                logger.info("DNS redirection remains active; press Ctrl+C to stop.")
-                try:
-                    while dns._thread.is_alive():
-                        dns._thread.join(timeout=0.5)
-                except KeyboardInterrupt:
-                    logger.info("Stopping DPIveil...")
-                if dns.error:
-                    logger.error("DNS redirection stopped: %s", dns.error)
-                    return 1
             return 0
         addresses = resolve_verified(config.host, config.timeout, config.max_ips)
         logger.info("Verified target addresses | %s | %s", config.host, ", ".join(addresses))
@@ -216,7 +204,7 @@ def run_auto(profile, session, logger, dns=None) -> int:
         logger.error("Cannot resolve a verified target: %s", exc)
         return 1
 
-    engine = PacketEngine(profile.filter, logger, session)
+    engine = PacketEngine(profile.filter, logger, session, dns_redirect=dns)
     errors = []
 
     def worker():
@@ -237,9 +225,6 @@ def run_auto(profile, session, logger, dns=None) -> int:
             return 2
         logger.info("Active strategy for this session: %s", selected.name)
         while thread.is_alive():
-            if dns is not None and dns.error:
-                logger.error("DNS redirection stopped: %s", dns.error)
-                return 1
             thread.join(timeout=0.5)
         if errors:
             logger.error("WinDivert engine stopped: %s", errors[0])
