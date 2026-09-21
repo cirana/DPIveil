@@ -16,17 +16,20 @@ class EngineStats:
     send_errors: int = 0
     tls_client_hellos: int = 0
     sni_detected: int = 0
+    strategy_packets: int = 0
 
 
-class PassthroughEngine:
+class PacketEngine:
     def __init__(
         self,
         packet_filter: str,
         logger: logging.Logger,
+        strategy,
         stats_interval: float = 10.0,
     ) -> None:
         self.packet_filter = packet_filter
         self.logger = logger
+        self.strategy = strategy
         self.stats_interval = stats_interval
         self.stats = EngineStats()
         self._last_report = time.monotonic()
@@ -37,17 +40,19 @@ class PassthroughEngine:
             return
 
         self.logger.info(
-            "Passthrough stats: %s packets | %s bytes | TLS ClientHello: %s | SNI: %s | %s send errors",
+            "Stats: %s packets | %s bytes | TLS ClientHello: %s | SNI: %s | strategy output: %s | %s send errors",
             f"{self.stats.packets:,}",
             f"{self.stats.bytes:,}",
             self.stats.tls_client_hellos,
             self.stats.sni_detected,
+            self.stats.strategy_packets,
             self.stats.send_errors,
         )
         self._last_report = now
 
     def run(self) -> EngineStats:
-        self.logger.info("Opening WinDivert passthrough engine...")
+        self.logger.info("Opening WinDivert engine...")
+        self.logger.info("Strategy: %s", self.strategy.name)
 
         with pydivert.WinDivert(self.packet_filter) as divert:
             self.logger.info("WinDivert engine is active.")
@@ -71,20 +76,20 @@ class PassthroughEngine:
                             info.payload_length,
                             info.flags,
                         )
-                    else:
-                        self.logger.debug(
-                            "TLS ClientHello | %s:%s | SNI unavailable | payload=%s | flags=%s",
-                            info.destination_ip,
-                            info.destination_port,
-                            info.payload_length,
-                            info.flags,
-                        )
 
                 try:
-                    divert.send(packet)
-                except OSError as exc:
-                    self.stats.send_errors += 1
-                    self.logger.error("Could not resend packet: %s", exc)
+                    outgoing_packets = list(self.strategy.process(packet))
+                except Exception:
+                    self.logger.exception("Strategy failed; sending original packet unchanged.")
+                    outgoing_packets = [packet]
+
+                for outgoing in outgoing_packets:
+                    try:
+                        divert.send(outgoing)
+                        self.stats.strategy_packets += 1
+                    except OSError as exc:
+                        self.stats.send_errors += 1
+                        self.logger.error("Could not send packet: %s", exc)
 
                 self._report_if_needed()
 
