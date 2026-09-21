@@ -9,6 +9,11 @@ import pydivert
 from dpiveil.classifier import classify_packet
 
 
+def is_suspect_rst(syn_ttl: int, syn_ip_id: int, rst_ttl: int, rst_ip_id: int) -> bool:
+    """Match the differing SYN-ACK/RST fingerprint observed on the test network."""
+    return syn_ip_id == 0 and rst_ip_id != 0 and rst_ttl == syn_ttl - 1
+
+
 @dataclass
 class EngineStats:
     packets: int = 0
@@ -19,6 +24,7 @@ class EngineStats:
     strategy_packets: int = 0
     fragmented_client_hellos: int = 0
     inbound_resets: int = 0
+    suspect_resets_dropped: int = 0
 
 
 class PacketEngine:
@@ -35,6 +41,8 @@ class PacketEngine:
         self.stats_interval = stats_interval
         self.stats = EngineStats()
         self._last_report = time.monotonic()
+        self._syn_acks: dict[tuple[str, int], tuple[int, int, float]] = {}
+        self._protected_flows: dict[tuple[str, int], float] = {}
 
     def _report_if_needed(self) -> None:
         now = time.monotonic()
@@ -42,17 +50,20 @@ class PacketEngine:
             return
 
         self.logger.info(
-            "Stats: %s packets | %s bytes | TLS ClientHello: %s | SNI: %s | fragmented: %s | inbound RST: %s | strategy output: %s | %s send errors",
+            "Stats: %s packets | %s bytes | TLS ClientHello: %s | SNI: %s | fragmented: %s | inbound RST: %s | dropped RST: %s | strategy output: %s | %s send errors",
             f"{self.stats.packets:,}",
             f"{self.stats.bytes:,}",
             self.stats.tls_client_hellos,
             self.stats.sni_detected,
             self.stats.fragmented_client_hellos,
             self.stats.inbound_resets,
+            self.stats.suspect_resets_dropped,
             self.stats.strategy_packets,
             self.stats.send_errors,
         )
         self._last_report = now
+        self._syn_acks = {key: value for key, value in self._syn_acks.items() if now - value[2] <= 30}
+        self._protected_flows = {key: seen for key, seen in self._protected_flows.items() if now - seen <= 8}
 
     def run(self) -> EngineStats:
         self.logger.info("Opening WinDivert engine...")
@@ -70,6 +81,9 @@ class PacketEngine:
                     ip_ttl = ip_header[8] if len(ip_header) >= 20 and ip_header[0] >> 4 == 4 else "?"
                     ip_id = int.from_bytes(ip_header[4:6], "big") if ip_ttl != "?" else "?"
                     if packet.tcp is not None and packet.tcp.syn and packet.tcp.ack:
+                        flow = (str(packet.src_addr), packet.tcp.dst_port)
+                        if isinstance(ip_ttl, int) and isinstance(ip_id, int):
+                            self._syn_acks[flow] = (ip_ttl, ip_id, time.monotonic())
                         self.logger.info(
                             "Inbound TCP SYN-ACK | %s:%s -> local:%s | ttl=%s | ip_id=%s",
                             packet.src_addr,
@@ -90,6 +104,32 @@ class PacketEngine:
                             packet.tcp.seq_num,
                             getattr(packet.tcp, "ack_num", "?"),
                         )
+                        flow = (str(packet.src_addr), packet.tcp.dst_port)
+                        syn = self._syn_acks.get(flow)
+                        protected_at = self._protected_flows.get(flow)
+                        now = time.monotonic()
+                        config = getattr(self.strategy, "config", None)
+                        if (
+                            getattr(config, "drop_suspect_rst", False)
+                            and syn is not None
+                            and protected_at is not None
+                            and now - syn[2] <= 30
+                            and now - protected_at <= 8
+                            and isinstance(ip_ttl, int)
+                            and isinstance(ip_id, int)
+                            and is_suspect_rst(syn[0], syn[1], ip_ttl, ip_id)
+                        ):
+                            self.stats.suspect_resets_dropped += 1
+                            self.logger.warning(
+                                "Dropped suspected TCP RST | %s:%s -> local:%s | syn_ttl=%s | rst_ttl=%s",
+                                packet.src_addr,
+                                packet.tcp.src_port,
+                                packet.tcp.dst_port,
+                                syn[0],
+                                ip_ttl,
+                            )
+                            self._report_if_needed()
+                            continue
                     try:
                         divert.send(packet)
                         self.stats.strategy_packets += 1
@@ -134,13 +174,18 @@ class PacketEngine:
                         len(outgoing_packets[1].payload),
                     )
 
+                sent_count = 0
                 for outgoing in outgoing_packets:
                     try:
                         divert.send(outgoing)
                         self.stats.strategy_packets += 1
+                        sent_count += 1
                     except OSError as exc:
                         self.stats.send_errors += 1
                         self.logger.error("Could not send packet: %s", exc)
+
+                if info.is_tls_client_hello and sent_count == 2 and packet.tcp is not None:
+                    self._protected_flows[(info.destination_ip, packet.tcp.src_port)] = time.monotonic()
 
                 self._report_if_needed()
 

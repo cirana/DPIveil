@@ -14,6 +14,7 @@ class FragmentConfig:
     split_mode: str = "sni"
     reverse_order: bool = False
     target_domains: tuple[str, ...] = ()
+    drop_suspect_rst: bool = False
 
 
 class TLSClientHelloFragmentStrategy:

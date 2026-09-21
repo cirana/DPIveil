@@ -53,9 +53,12 @@ def build_strategy(profile):
         chunk_size = int(profile.strategy_options.get("first_chunk_size", 32))
         split_mode = str(profile.strategy_options.get("split_mode", "sni"))
         reverse_order = profile.strategy_options.get("reverse_order", False)
+        drop_suspect_rst = profile.strategy_options.get("drop_suspect_rst", False)
         target_domains = profile.strategy_options.get("target_domains", [])
         if not isinstance(reverse_order, bool):
             raise ValueError("reverse_order must be a boolean")
+        if not isinstance(drop_suspect_rst, bool):
+            raise ValueError("drop_suspect_rst must be a boolean")
         if not isinstance(target_domains, list) or any(not isinstance(domain, str) for domain in target_domains):
             raise ValueError("target_domains must be a list of hostnames")
         return TLSClientHelloFragmentStrategy(
@@ -64,6 +67,7 @@ def build_strategy(profile):
                 split_mode=split_mode,
                 reverse_order=reverse_order,
                 target_domains=tuple(target_domains),
+                drop_suspect_rst=drop_suspect_rst,
             )
         )
 
@@ -117,11 +121,12 @@ def run() -> int:
         return 1
     finally:
         logger.info(
-            "Final stats: %s packets | %s bytes | %s TLS splits | %s inbound RST | %s send errors",
+            "Final stats: %s packets | %s bytes | %s TLS splits | %s inbound RST | %s dropped RST | %s send errors",
             f"{engine.stats.packets:,}",
             f"{engine.stats.bytes:,}",
             engine.stats.fragmented_client_hellos,
             engine.stats.inbound_resets,
+            engine.stats.suspect_resets_dropped,
             engine.stats.send_errors,
         )
         logger.info("DPIveil stopped cleanly.")
