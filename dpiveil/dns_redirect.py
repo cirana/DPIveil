@@ -96,8 +96,11 @@ class DNSRedirect:
         if udp is None:
             return packet
         payload = bytes(packet.payload or b"")
-        family = ipaddress.ip_address(str(packet.src_addr)).version
-        resolver = (self.config.ipv4_resolver if family == 4 else self.config.ipv6_resolver)
+        # For inbound packets src_addr is the resolver; the local destination
+        # determines which address family/mapping was used.
+        local_addr = packet.dst_addr if packet.is_inbound else packet.src_addr
+        family = ipaddress.ip_address(str(local_addr)).version
+        resolver = self.config.ipv4_resolver if family == 4 else self.config.ipv6_resolver
         port = self.config.ipv4_port if family == 4 else self.config.ipv6_port
         now = self.clock()
         self._cleanup(now)
@@ -125,6 +128,10 @@ class DNSRedirect:
                     self.logger.error("DNS port mapping exhausted")
                     return packet
             self.pending[key] = (original_address, udp.dst_port, now, original_port)
+            self.logger.info(
+                "DNS query redirect | %s:%s -> %s:%s | original DNS %s:53",
+                packet.src_addr, udp.src_port, resolver, port, original_address,
+            )
             packet.ip.dst_addr = resolver
             udp.dst_port = port
             packet.recalculate_checksums()
@@ -147,6 +154,10 @@ class DNSRedirect:
                 self.logger.warning("Discarded unexpected DNS response | %s:%s", packet.src_addr, udp.src_port)
                 return None
             self.pending.pop(key, None)
+            self.logger.info(
+                "DNS reply restore | %s:%s -> original DNS %s:%s | local:%s",
+                packet.src_addr, udp.src_port, record[0], record[1], record[3],
+            )
             packet.ip.src_addr = record[0]
             udp.src_port = record[1]
             udp.dst_port = record[3]
