@@ -194,6 +194,7 @@ class SessionStrategy:
         self._probe_host = host
         self._active = False
         self._applied = False
+        self._tracked_ips = set()
 
     def set_probe(self, candidate, port=None, host=None):
         with self._lock:
@@ -208,6 +209,28 @@ class SessionStrategy:
         with self._lock:
             return self._applied
 
+    def _matches_active_domain(self, host):
+        hostname = (host or "").lower().rstrip(".")
+        return any(
+            hostname == domain or hostname.endswith("." + domain)
+            for domain in self.active_domains
+        )
+
+    def record_dns_answer(self, host, addresses):
+        if not self._matches_active_domain(host):
+            return
+        with self._lock:
+            before = len(self._tracked_ips)
+            self._tracked_ips.update(str(address) for address in addresses)
+            added = len(self._tracked_ips) - before
+        if added:
+            # Keep this intentionally low-volume; the app log already shows packet details.
+            pass
+
+    def protects_ip(self, address):
+        with self._lock:
+            return self._active and str(address) in self._tracked_ips
+
     def activate(self, candidate):
         with self._lock:
             self._candidate = candidate
@@ -221,7 +244,9 @@ class SessionStrategy:
         if candidate is None or packet.tcp is None or (not active and packet.tcp.src_port != port):
             return [packet]
         domains = self.active_domains if active else (probe_host,)
-        output = list(CandidateStrategy(candidate, domains).process(packet))
+        strategy = CandidateStrategy(candidate, domains)
+        force_ip = active and self.protects_ip(getattr(packet, "dst_addr", ""))
+        output = list(strategy.process(packet, force_ip=force_ip))
         if not active and len(output) > 1:
             with self._lock:
                 if self._candidate == candidate and self._port == port:
