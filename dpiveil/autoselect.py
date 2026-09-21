@@ -10,6 +10,7 @@ import threading
 from urllib.parse import quote
 from dataclasses import dataclass
 
+from dpiveil.constants import DISCORD_DOMAINS
 from dpiveil.strategies.candidates import Candidate, CandidateStrategy
 
 
@@ -17,22 +18,6 @@ DEFAULT_HEALTH_CHECKS = (
     ("web", "discord.com", "/", "http"),
     ("updates", "updates.discord.com", "/", "http"),
     ("gateway", "gateway.discord.gg", "/?v=10&encoding=json", "websocket"),
-)
-
-DEFAULT_ACTIVE_DOMAINS = (
-    "discord.com",
-    "discord.gg",
-    "discordapp.com",
-    "discordapp.net",
-    "discord.media",
-    "discordcdn.com",
-    "discord.dev",
-    "discord.new",
-    "discord.gift",
-    "discordstatus.com",
-    "dis.gd",
-    "discord.co",
-    "discord-attachments-uploads-prd.storage.googleapis.com",
 )
 
 
@@ -185,7 +170,7 @@ def resolve_system(host, max_ips):
 class SessionStrategy:
     name = "auto"
 
-    def __init__(self, host, active_domains=DEFAULT_ACTIVE_DOMAINS):
+    def __init__(self, host, active_domains=DISCORD_DOMAINS):
         self.host = host
         self.active_domains = tuple(active_domains)
         self._lock = threading.Lock()
