@@ -1,13 +1,12 @@
 {
   "name": "Default",
-  "description": "SNI-aware fragmentation with TCP reset diagnostics for selected hosts.",
+  "description": "Blockcheck-proven Discord TLS desync profile using a Zapret-compatible split.",
   "filter": "(outbound and tcp and tcp.DstPort == 443) or (inbound and tcp and tcp.SrcPort == 443 and (tcp.Syn or tcp.Rst))",
-  "strategy": "tls_client_hello_fragment",
+  "strategy": "zapret_compat",
   "strategy_options": {
-    "first_chunk_size": 32,
-    "split_mode": "sni",
-    "reverse_order": false,
-    "drop_suspect_rst": false,
+    "mode": "multisplit",
+    "split_pos": 2,
+    "fake_ttl": 1,
     "target_domains": ["discord.com"]
   }
 }
