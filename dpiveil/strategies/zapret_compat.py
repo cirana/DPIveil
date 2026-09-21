@@ -111,6 +111,23 @@ class ZapretCompatStrategy:
         yield fake
         yield packet
 
+    def process_forced(self, packet) -> Iterable:
+        """Apply split strategies to DNS-confirmed target IPs even when SNI parsing is incomplete."""
+        payload = bytes(packet.payload or b"")
+        if packet.tcp is None or len(payload) < 2 or payload[0] != 0x16:
+            yield packet
+            return
+
+        if self.config.mode == "multisplit":
+            yield from self._split(packet, reverse=False)
+            return
+        if self.config.mode == "multidisorder":
+            yield from self._split(packet, reverse=True)
+            return
+
+        # fake_ttl needs a parsed SNI so the decoy can preserve TLS structure.
+        yield packet
+
     def process(self, packet) -> Iterable:
         info = classify_packet(packet)
 
