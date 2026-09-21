@@ -1,6 +1,6 @@
 {
   "name": "Default",
-  "description": "Automatically probe Discord web/API/gateway/CDN/update health and select a session strategy.",
+  "description": "Automatically probe Discord HTTPS and apply the selected strategy to Discord services.",
   "dns_redirect": {
     "enabled": true,
     "ipv4_resolver": "77.88.8.8",
@@ -32,38 +32,6 @@
         "kind": "fake_ttl",
         "priority": 3,
         "ttl": 1
-      }
-    ],
-    "health_checks": [
-      {
-        "name": "web",
-        "host": "discord.com",
-        "path": "/",
-        "kind": "http"
-      },
-      {
-        "name": "api",
-        "host": "discord.com",
-        "path": "/api/v10/gateway",
-        "kind": "json"
-      },
-      {
-        "name": "gateway",
-        "host": "gateway.discord.gg",
-        "path": "/",
-        "kind": "websocket"
-      },
-      {
-        "name": "cdn",
-        "host": "cdn.discordapp.com",
-        "path": "/",
-        "kind": "http"
-      },
-      {
-        "name": "updates",
-        "host": "discord.com",
-        "path": "/api/download?platform=win",
-        "kind": "http"
       }
     ]
   }
