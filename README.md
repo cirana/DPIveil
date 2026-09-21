@@ -50,7 +50,7 @@ The DNS policy is configured through `profiles/default.json`:
 }
 ```
 
-The full default domain set is kept in the profile. TLS certificate verification and HSTS are not disabled.
+If `domains` is omitted, both the DNS policy and the automatic session strategy use the shared `DISCORD_DOMAINS` constant. A profile can still override the DNS namespace list explicitly. TLS certificate verification and HSTS are not disabled.
 
 ## Automatic HTTPS strategy selection
 
