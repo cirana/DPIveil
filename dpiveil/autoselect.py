@@ -15,10 +15,13 @@ from dpiveil.strategies.candidates import Candidate, CandidateStrategy
 
 DEFAULT_HEALTH_CHECKS = (
     ("web", "discord.com", "/", "http"),
-    ("api", "discord.com", "/api/v10/gateway", "json"),
-    ("gateway", "gateway.discord.gg", "/", "websocket"),
-    ("cdn", "cdn.discordapp.com", "/", "http"),
-    ("updates", "discord.com", "/api/download?platform=win", "http"),
+)
+
+DEFAULT_ACTIVE_DOMAINS = (
+    "discord.com",
+    "discord.gg",
+    "discordapp.com",
+    "discordapp.net",
 )
 
 
