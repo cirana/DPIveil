@@ -13,12 +13,22 @@ from dataclasses import dataclass
 from dpiveil.strategies.candidates import Candidate, CandidateStrategy
 
 
+DEFAULT_HEALTH_CHECKS = (
+    ("web", "discord.com", "/", "http"),
+    ("api", "discord.com", "/api/v10/gateway", "json"),
+    ("gateway", "gateway.discord.gg", "/", "websocket"),
+    ("cdn", "cdn.discordapp.com", "/", "http"),
+    ("updates", "discord.com", "/api/download?platform=win", "http"),
+)
+
+
 @dataclass(frozen=True)
 class AutoConfig:
     host: str
     timeout: float
     max_ips: int
     candidates: tuple[Candidate, ...]
+    health_checks: tuple[tuple[str, str, str, str], ...] = DEFAULT_HEALTH_CHECKS
 
     @classmethod
     def from_options(cls, options):
@@ -26,6 +36,7 @@ class AutoConfig:
         timeout = options.get("timeout", 6)
         max_ips = options.get("max_ips", 2)
         rows = options.get("candidates", [])
+        checks = options.get("health_checks")
         if (not isinstance(host, str) or not host or not host.isascii() or
                 not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or
                 not 1 <= timeout <= 30 or not isinstance(max_ips, int) or
@@ -37,7 +48,30 @@ class AutoConfig:
             raise ValueError("Provide unique candidate names")
         for candidate in candidates:
             CandidateStrategy(candidate, host)
-        return cls(host, float(timeout), max_ips, candidates)
+
+        parsed_checks = DEFAULT_HEALTH_CHECKS
+        if checks is not None:
+            if not isinstance(checks, list) or not checks:
+                raise ValueError("health_checks must be a non-empty list")
+            parsed = []
+            for row in checks:
+                if not isinstance(row, dict):
+                    raise ValueError("health_checks entries must be objects")
+                name = row.get("name")
+                check_host = row.get("host")
+                path = row.get("path", "/")
+                kind = row.get("kind", "http")
+                if (not isinstance(name, str) or not name or
+                        not isinstance(check_host, str) or not check_host or not check_host.isascii() or
+                        not isinstance(path, str) or not path.startswith("/") or
+                        kind not in {"http", "json", "websocket"}):
+                    raise ValueError("Invalid health check")
+                parsed.append((name, check_host.lower(), path, kind))
+            if len({row[0] for row in parsed}) != len(parsed):
+                raise ValueError("Health check names must be unique")
+            parsed_checks = tuple(parsed)
+
+        return cls(host.lower(), float(timeout), max_ips, candidates, parsed_checks)
 
 
 class DirectHTTPSConnection(http.client.HTTPSConnection):
@@ -59,17 +93,36 @@ class DirectHTTPSConnection(http.client.HTTPSConnection):
             raise
 
 
-def https_request(host, address, path, timeout, on_connected=None, accept=None):
+def https_request(host, address, path, timeout, on_connected=None, accept=None, headers=None):
     connection = DirectHTTPSConnection(host, address, timeout, on_connected)
     try:
-        headers = {"Accept": accept} if accept else {}
-        connection.request("GET" if accept else "HEAD", path, headers=headers)
+        request_headers = dict(headers or {})
+        if accept:
+            request_headers["Accept"] = accept
+        connection.request("GET" if accept or headers else "HEAD", path, headers=request_headers)
         response = connection.getresponse()
         if not 200 <= response.status < 500:
             raise ValueError(f"Invalid HTTP status: {response.status}")
-        return response.status, response.read(65536) if accept else b""
+        return response.status, response.read(65536) if accept or headers else b""
     finally:
         connection.close()
+
+
+def websocket_probe(host, address, path, timeout, on_connected=None):
+    key = "dGhlIHNhbXBsZSBub25jZQ=="
+    status, body = https_request(
+        host, address, path, timeout, on_connected=on_connected,
+        headers={
+            "Connection": "Upgrade",
+            "Upgrade": "websocket",
+            "Sec-WebSocket-Key": key,
+            "Sec-WebSocket-Version": "13",
+            "User-Agent": "DPIveil/health-check",
+        },
+    )
+    if status not in (101, 400, 401, 403, 404, 426):
+        raise ValueError(f"Unexpected gateway HTTP status: {status}")
+    return status, body
 
 
 def resolve_verified(host, timeout, max_ips):
@@ -145,7 +198,45 @@ class SessionStrategy:
         return output
 
 
+def _check_probe(kind, host, address, path, timeout, on_connected=None, probe=https_request):
+    if kind == "websocket":
+        return websocket_probe(host, address, path, timeout, on_connected)
+    accept = "application/json" if kind == "json" else None
+    return probe(host, address, path, timeout, on_connected=on_connected, accept=accept)
+
+
+def _endpoint_addresses(config, logger):
+    resolved = {}
+    for _, host, _, _ in config.health_checks:
+        if host in resolved:
+            continue
+        try:
+            resolved[host] = resolve_verified(host, config.timeout, config.max_ips)
+        except Exception as exc:
+            logger.warning("Health DNS | %s | failed: %s", host, exc)
+            resolved[host] = []
+    return resolved
+
+
+def health_check_direct(config, logger):
+    resolved = _endpoint_addresses(config, logger)
+    results = {}
+    for name, host, path, kind in config.health_checks:
+        ok = False
+        for ip in resolved.get(host, []):
+            try:
+                status, _ = _check_probe(kind, host, ip, path, config.timeout)
+                logger.info("Direct health | %s | %s | %s | status=%s", name, host, ip, status)
+                ok = True
+                break
+            except Exception as exc:
+                logger.info("Direct health | %s | %s | %s | failed: %s", name, host, ip, exc)
+        results[name] = ok
+    return all(results.values()), results
+
+
 def direct_works(config, addresses, logger, probe=https_request):
+    # Keep compatibility for existing tests/callers; the app now uses health_check_direct.
     success = False
     for ip in addresses:
         try:
@@ -157,31 +248,67 @@ def direct_works(config, addresses, logger, probe=https_request):
     return success
 
 
-def test_candidates(config, session, logger, addresses, probe=https_request):
+def test_candidates(config, session, logger, addresses=None, probe=https_request):
+    endpoint_addresses = _endpoint_addresses(config, logger)
     results = {}
+    details = {}
+
     for candidate in config.candidates:
-        outcomes = []
-        for ip in addresses:
-            session.set_probe(candidate)
-            try:
-                status, _ = probe(config.host, ip, "/", config.timeout,
-                                  on_connected=lambda port: session.set_probe(candidate, port))
-                if not session.probe_applied():
-                    raise ValueError("Candidate did not alter the probe ClientHello")
-                logger.info("Probe | %s | %s | verified HTTPS status=%s", candidate.name, ip, status)
-                outcomes.append(True)
-            except Exception as exc:
-                logger.warning("Probe | %s | %s | failed: %s", candidate.name, ip, exc)
-                outcomes.append(False)
-            finally:
-                session.set_probe(None)
-        results[candidate.name] = sum(outcomes)
-        logger.info("Candidate %s: %s/%s verified HTTPS responses", candidate.name, sum(outcomes), len(addresses))
-    working = [c for c in config.candidates if results[c.name] > 0]
+        endpoint_results = {}
+        for name, host, path, kind in config.health_checks:
+            ok = False
+            failures = []
+            ips = endpoint_addresses.get(host, [])
+            for ip in ips:
+                session.set_probe(candidate)
+                try:
+                    status, _ = _check_probe(
+                        kind, host, ip, path, config.timeout,
+                        on_connected=lambda port, c=candidate: session.set_probe(c, port),
+                        probe=probe,
+                    )
+                    if not session.probe_applied():
+                        raise ValueError("Candidate did not alter the probe ClientHello")
+                    logger.info(
+                        "Health probe | %s | %s | %s | %s | status=%s",
+                        candidate.name, name, host, ip, status,
+                    )
+                    ok = True
+                    break
+                except Exception as exc:
+                    failures.append(str(exc))
+                    logger.warning(
+                        "Health probe | %s | %s | %s | %s | failed: %s",
+                        candidate.name, name, host, ip, exc,
+                    )
+                finally:
+                    session.set_probe(None)
+
+            endpoint_results[name] = ok
+            if not ok and not ips:
+                failures.append("no verified IPv4 address")
+            if failures and not ok:
+                logger.warning("Health result | %s | %s | FAIL | %s",
+                               candidate.name, name, "; ".join(failures[:2]))
+            else:
+                logger.info("Health result | %s | %s | OK", candidate.name, name)
+
+        passed = sum(endpoint_results.values())
+        required = len(config.health_checks)
+        results[candidate.name] = passed
+        details[candidate.name] = endpoint_results
+        logger.info(
+            "Candidate %s: %s/%s Discord health checks passed",
+            candidate.name, passed, required,
+        )
+
+    working = [c for c in config.candidates
+               if results[c.name] == len(config.health_checks)]
     if not working:
-        logger.error("No candidate produced verified HTTPS; no strategy selected.")
-        return None, results
-    selected = min(working, key=lambda c: (-results[c.name], c.priority, c.name))
+        logger.error("No candidate passed all Discord health checks; no strategy selected.")
+        return None, details
+
+    selected = min(working, key=lambda c: (c.priority, c.name))
     session.activate(selected)
     logger.info("Selected session strategy: %s", selected.name)
-    return selected, results
+    return selected, details
