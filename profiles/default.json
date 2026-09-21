@@ -5,22 +5,7 @@
     "enabled": true,
     "resolver": "1.1.1.1",
     "doh_template": "https://cloudflare-dns.com/dns-query",
-    "allow_fallback_to_udp": false,
-    "domains": [
-      "discord.com",
-      "discord.gg",
-      "discordapp.com",
-      "discordapp.net",
-      "discord.media",
-      "discordcdn.com",
-      "discord.dev",
-      "discord.new",
-      "discord.gift",
-      "discordstatus.com",
-      "dis.gd",
-      "discord.co",
-      "discord-attachments-uploads-prd.storage.googleapis.com"
-    ]
+    "allow_fallback_to_udp": false
   },
   "filter": "(outbound and tcp and tcp.DstPort == 443) or (inbound and tcp and tcp.SrcPort == 443 and (tcp.Syn or tcp.Rst))",
   "strategy": "auto",
