@@ -113,45 +113,6 @@ Gereksinimler:
 - Python 3.10+
 - Yönetici yetkisi
 
-## EXE oluşturma
-
-Projeyi klonladıktan veya güncelledikten sonra:
-
-```powershell
-git pull
-.\scripts\build.ps1
-```
-
-Build scripti:
-
-- runtime bağımlılıklarını kurar
-- PyInstaller build bağımlılıklarını kurar
-- testleri çalıştırır
-- DPIveil'i tek EXE olarak paketler
-- WinDivert dosyalarını EXE'nin yanına kopyalar
-- üretilen dosyaların SHA-256 değerlerini gösterir
-
-Başarılı build sonucunda:
-
-```text
-dist\
-├── DPIveil.exe
-├── WinDivert64.dll
-└── WinDivert64.sys
-```
-
-Python runtime, DPIveil modülleri ve varsayılan profil `DPIveil.exe` içine gömülüdür. WinDivert DLL ve sürücüsü özellikle EXE dışında tutulur.
-
-## Testler
-
-Test paketini doğrudan çalıştırmak için:
-
-```powershell
-python -m unittest discover -s tests
-```
-
-Testler gerçek Windows DNS ayarlarını değiştirmeden strateji seçimi, DNS politika yaşam döngüsü, paket sınıflandırması ve strateji davranışlarını kontrol eder.
-
 ## Yapılandırma
 
 Varsayılan profil:
@@ -211,40 +172,6 @@ profiles/
 scripts/
   build.ps1       Windows EXE build scripti
 ```
-
-## Release ve kod imzalama
-
-`v*` biçiminde bir Git tag'i oluşturulduğunda Windows release workflow'u çalışır.
-
-Release build'lerinde `DPIveil.exe` Authenticode ile SHA-256 kullanılarak imzalanabilir ve timestamp uygulanır.
-
-GitHub repository secrets:
-
-```text
-WINDOWS_CERTIFICATE_BASE64
-WINDOWS_CERTIFICATE_PASSWORD
-```
-
-Tag ile oluşturulan release'lerde bu sertifika bilgileri zorunludur. İmzalama başarısız olursa release yayınlanmaz.
-
-Workflow sonunda:
-
-```text
-DPIveil-windows-x64.zip
-DPIveil-windows-x64.zip.sha256
-```
-
-oluşturulur.
-
-ZIP'in içinde yalnızca şu üç runtime dosyası bulunur:
-
-```text
-DPIveil.exe
-WinDivert64.dll
-WinDivert64.sys
-```
-
-Kod imzalama ve doğrulanabilir release zinciri antivirüs false-positive ihtimalini azaltabilir ancak hiçbir antivirüs motoru için sıfır false-positive garantisi verilemez.
 
 ## Teknik mimari
 
