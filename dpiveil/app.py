@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import logging
 import sys
-import time
 from pathlib import Path
 
 from dpiveil import __version__
+from dpiveil.engine import PassthroughEngine
 from dpiveil.profiles import load_profile
 from dpiveil.system import is_admin, is_windows
 
@@ -78,16 +78,26 @@ def run() -> int:
     logger.info("DPIveil started.")
     logger.info("Profile: %s", profile.name)
     logger.info("Filter: %s", profile.filter)
-    logger.info("Packet-processing engine is not enabled yet.")
+    logger.info("Mode: passthrough (packets are not modified)")
     logger.info("Press Ctrl+C to stop.")
 
+    engine = PassthroughEngine(profile.filter, logger)
+
     try:
-        while True:
-            time.sleep(1)
+        engine.run()
     except KeyboardInterrupt:
         print()
         logger.info("Stopping DPIveil...")
+    except OSError as exc:
+        logger.error("WinDivert error: %s", exc)
+        return 1
     finally:
+        logger.info(
+            "Final stats: %s packets | %s bytes | %s send errors",
+            f"{engine.stats.packets:,}",
+            f"{engine.stats.bytes:,}",
+            engine.stats.send_errors,
+        )
         logger.info("DPIveil stopped cleanly.")
 
     return 0
