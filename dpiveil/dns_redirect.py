@@ -285,6 +285,44 @@ class DNSRedirect:
         )
 
 
+def repair_stale_loopback_dns(logger: logging.Logger):
+    """Undo a stale 127.0.0.1 DNS setting left by older local-proxy builds.
+
+    Only active physical adapters with a default gateway are touched. Virtual
+    adapters (Radmin/VPN/etc.) are deliberately ignored.
+    """
+    script = r"""
+$items = Get-NetIPConfiguration | Where-Object {
+  $_.NetAdapter.Status -eq 'Up' -and
+  $_.NetAdapter.HardwareInterface -eq $true -and
+  ($null -ne $_.IPv4DefaultGateway -or $null -ne $_.IPv6DefaultGateway)
+}
+foreach ($item in $items) {
+  $idx = $item.InterfaceIndex
+  $servers = @(Get-DnsClientServerAddress -InterfaceIndex $idx | ForEach-Object { $_.ServerAddresses } | Where-Object { $_ })
+  if ($servers -contains '127.0.0.1') {
+    Set-DnsClientServerAddress -InterfaceIndex $idx -ResetServerAddresses
+    Write-Output ($item.InterfaceAlias + '|' + $idx)
+  }
+}
+"""
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=15,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise OSError((result.stderr or result.stdout or "PowerShell DNS repair failed").strip())
+    repaired = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    for item in repaired:
+        logger.warning("Repaired stale local DNS setting | adapter=%s", item)
+    return tuple(repaired)
+
+
 def flush_dns_cache():
     result = subprocess.run(
         ["ipconfig", "/flushdns"],
