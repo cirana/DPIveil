@@ -5,8 +5,9 @@ import sys
 from pathlib import Path
 
 from dpiveil import __version__
-from dpiveil.engine import PassthroughEngine
+from dpiveil.engine import PacketEngine
 from dpiveil.profiles import load_profile
+from dpiveil.strategies.tls_fragment import FragmentConfig, TLSClientHelloFragmentStrategy
 from dpiveil.system import is_admin, is_windows
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -47,6 +48,16 @@ def check_pydivert() -> bool:
     return True
 
 
+def build_strategy(profile):
+    if profile.strategy == "tls_client_hello_fragment":
+        chunk_size = int(profile.strategy_options.get("first_chunk_size", 32))
+        return TLSClientHelloFragmentStrategy(
+            FragmentConfig(first_chunk_size=chunk_size)
+        )
+
+    raise ValueError(f"Unknown strategy: {profile.strategy}")
+
+
 def run() -> int:
     logger = configure_logging()
 
@@ -71,17 +82,18 @@ def run() -> int:
 
     try:
         profile = load_profile(DEFAULT_PROFILE)
-    except (OSError, KeyError, ValueError) as exc:
-        logger.error("Could not load default profile: %s", exc)
+        strategy = build_strategy(profile)
+    except (OSError, KeyError, TypeError, ValueError) as exc:
+        logger.error("Could not load default profile or strategy: %s", exc)
         return 1
 
     logger.info("DPIveil started.")
     logger.info("Profile: %s", profile.name)
     logger.info("Filter: %s", profile.filter)
-    logger.info("Mode: passthrough (packets are not modified)")
+    logger.info("Strategy: %s", strategy.name)
     logger.info("Press Ctrl+C to stop.")
 
-    engine = PassthroughEngine(profile.filter, logger)
+    engine = PacketEngine(profile.filter, logger, strategy)
 
     try:
         engine.run()
