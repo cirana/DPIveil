@@ -137,7 +137,8 @@ def run() -> int:
         logger.info("Strategy mode: %s", mode)
     logger.info("Press Ctrl+C to stop.")
 
-    dns = LocalDNSProxy(dns_config, logger) if dns_config.enabled else None
+    dns_callback = getattr(strategy, "record_dns_answer", None)
+    dns = LocalDNSProxy(dns_config, logger, answer_callback=dns_callback) if dns_config.enabled else None
     if dns is not None:
         try:
             dns.start()
