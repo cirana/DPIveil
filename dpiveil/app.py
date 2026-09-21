@@ -7,7 +7,7 @@ from pathlib import Path
 
 from dpiveil import __version__
 from dpiveil.autoselect import AutoConfig, SessionStrategy, health_check_direct, resolve_verified, test_candidates
-from dpiveil.dns_redirect import DNSConfig, DNSRedirect, flush_dns_cache
+from dpiveil.dns_proxy import DNSProxyConfig, LocalDNSProxy
 from dpiveil.engine import PacketEngine
 from dpiveil.profiles import load_profile
 from dpiveil.strategies.tls_fragment import FragmentConfig, TLSClientHelloFragmentStrategy
@@ -122,7 +122,7 @@ def run() -> int:
     try:
         profile = load_profile(DEFAULT_PROFILE)
         strategy = build_strategy(profile)
-        dns_config = DNSConfig.from_options(profile.dns_redirect)
+        dns_config = DNSProxyConfig.from_options(profile.dns_redirect)
     except (OSError, KeyError, TypeError, ValueError) as exc:
         logger.error("Could not load default profile or strategy: %s", exc)
         return 1
@@ -137,12 +137,11 @@ def run() -> int:
         logger.info("Strategy mode: %s", mode)
     logger.info("Press Ctrl+C to stop.")
 
-    dns = DNSRedirect(dns_config, logger) if dns_config.enabled else None
+    dns = LocalDNSProxy(dns_config, logger) if dns_config.enabled else None
     if dns is not None:
         try:
-            flush_dns_cache()
-            logger.info("Windows DNS cache flushed.")
-        except OSError as exc:
+            dns.start()
+        except (OSError, RuntimeError, ValueError) as exc:
             logger.error("DNS startup failed: %s", exc)
             return 1
 
@@ -153,13 +152,12 @@ def run() -> int:
         return run_manual(profile, strategy, logger, dns)
     finally:
         if dns is not None:
-            logger.info("DNS redirect: %s queries, %s replies, %s unexpected replies",
-                        dns.queries, dns.responses, dns.spoofed)
+            dns.stop()
 
 
 def run_manual(profile, strategy, logger, dns=None) -> int:
 
-    engine = PacketEngine(profile.filter, logger, strategy, dns_redirect=dns)
+    engine = PacketEngine(profile.filter, logger, strategy)
 
     try:
         engine.run()
@@ -186,7 +184,7 @@ def run_manual(profile, strategy, logger, dns=None) -> int:
 
 def run_auto(profile, session, logger, dns=None) -> int:
     config = AutoConfig.from_options(profile.strategy_options)
-    engine = PacketEngine(profile.filter, logger, session, dns_redirect=dns)
+    engine = PacketEngine(profile.filter, logger, session)
     errors = []
 
     def worker():
@@ -205,10 +203,6 @@ def run_auto(profile, session, logger, dns=None) -> int:
         if not engine.ready.wait(timeout=5) or errors or not thread.is_alive():
             logger.error("Could not start WinDivert engine: %s", errors or "engine not ready")
             return 1
-
-        if dns is not None:
-            flush_dns_cache()
-            logger.info("Windows DNS cache flushed after WinDivert became active.")
 
         direct_ok, direct_details = health_check_direct(config, logger)
         logger.info(
