@@ -1,12 +1,12 @@
 {
   "name": "Default",
-  "description": "Experimental SNI-aware reverse fragmentation for selected hosts.",
-  "filter": "(outbound and tcp and tcp.DstPort == 443) or (inbound and tcp and tcp.SrcPort == 443 and tcp.Rst)",
+  "description": "SNI-aware fragmentation with TCP reset diagnostics for selected hosts.",
+  "filter": "(outbound and tcp and tcp.DstPort == 443) or (inbound and tcp and tcp.SrcPort == 443 and (tcp.Syn or tcp.Rst))",
   "strategy": "tls_client_hello_fragment",
   "strategy_options": {
     "first_chunk_size": 32,
     "split_mode": "sni",
-    "reverse_order": true,
+    "reverse_order": false,
     "target_domains": ["discord.com"]
   }
 }

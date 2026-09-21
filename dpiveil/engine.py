@@ -66,13 +66,29 @@ class PacketEngine:
                 self.stats.bytes += len(packet.raw)
 
                 if packet.is_inbound:
-                    if packet.tcp is not None and packet.tcp.rst:
-                        self.stats.inbound_resets += 1
+                    ip_header = bytes(packet.raw)
+                    ip_ttl = ip_header[8] if len(ip_header) >= 20 and ip_header[0] >> 4 == 4 else "?"
+                    ip_id = int.from_bytes(ip_header[4:6], "big") if ip_ttl != "?" else "?"
+                    if packet.tcp is not None and packet.tcp.syn and packet.tcp.ack:
                         self.logger.info(
-                            "Inbound TCP RST | %s:%s -> local:%s",
+                            "Inbound TCP SYN-ACK | %s:%s -> local:%s | ttl=%s | ip_id=%s",
                             packet.src_addr,
                             packet.tcp.src_port,
                             packet.tcp.dst_port,
+                            ip_ttl,
+                            ip_id,
+                        )
+                    if packet.tcp is not None and packet.tcp.rst:
+                        self.stats.inbound_resets += 1
+                        self.logger.info(
+                            "Inbound TCP RST | %s:%s -> local:%s | ttl=%s | ip_id=%s | seq=%s | ack=%s",
+                            packet.src_addr,
+                            packet.tcp.src_port,
+                            packet.tcp.dst_port,
+                            ip_ttl,
+                            ip_id,
+                            packet.tcp.seq_num,
+                            getattr(packet.tcp, "ack_num", "?"),
                         )
                     try:
                         divert.send(packet)
