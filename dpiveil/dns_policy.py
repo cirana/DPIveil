@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+import threading
 from dataclasses import dataclass
 
 
@@ -95,6 +96,8 @@ class WindowsDNSPolicy:
         self.original_doh = None
         self.doh_was_present = False
         self.started = False
+        self._stop_lock = threading.Lock()
+        self._stopped = False
 
     @staticmethod
     def _ps_quote(value: str) -> str:
@@ -169,6 +172,8 @@ class WindowsDNSPolicy:
     def start(self):
         if not self.config.enabled:
             return
+        with self._stop_lock:
+            self._stopped = False
         self._snapshot_doh()
         self._cleanup_stale_rules()
         try:
@@ -205,31 +210,36 @@ class WindowsDNSPolicy:
             )
 
     def stop(self):
-        errors = []
-        for name in list(self.rule_names):
+        with self._stop_lock:
+            if self._stopped:
+                return
+            self._stopped = True
+
+            errors = []
+            for name in list(self.rule_names):
+                try:
+                    _powershell(
+                        f"Remove-DnsClientNrptRule -Name {self._ps_quote(name)} "
+                        "-Force -ErrorAction SilentlyContinue"
+                    )
+                except OSError as exc:
+                    errors.append(exc)
+            self.rule_names = []
+
+            if self.original_doh is not None or not self.doh_was_present:
+                try:
+                    self._restore_doh()
+                except OSError as exc:
+                    errors.append(exc)
+
             try:
-                _powershell(
-                    f"Remove-DnsClientNrptRule -Name {self._ps_quote(name)} "
-                    "-Force -ErrorAction SilentlyContinue"
-                )
+                flush_dns_cache()
             except OSError as exc:
                 errors.append(exc)
-        self.rule_names = []
 
-        if self.original_doh is not None or not self.doh_was_present:
-            try:
-                self._restore_doh()
-            except OSError as exc:
-                errors.append(exc)
-
-        try:
-            flush_dns_cache()
-        except OSError as exc:
-            errors.append(exc)
-
-        if self.started:
-            if errors:
-                self.logger.warning("DNS policy cleanup completed with %s error(s)", len(errors))
-            else:
-                self.logger.info("Windows DNS policy removed; previous DoH settings restored.")
-        self.started = False
+            if self.started:
+                if errors:
+                    self.logger.warning("DNS policy cleanup completed with %s error(s)", len(errors))
+                else:
+                    self.logger.info("Windows DNS policy removed; previous DoH settings restored.")
+            self.started = False
