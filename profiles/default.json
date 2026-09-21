@@ -1,5 +1,9 @@
 {
   "name": "Default",
-  "description": "Initial HTTPS traffic profile. Processing strategies will be added separately.",
-  "filter": "outbound and tcp and tcp.DstPort == 443"
+  "description": "HTTPS profile using TLS ClientHello fragmentation.",
+  "filter": "outbound and tcp and tcp.DstPort == 443",
+  "strategy": "tls_client_hello_fragment",
+  "strategy_options": {
+    "first_chunk_size": 32
+  }
 }
