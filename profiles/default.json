@@ -1,6 +1,6 @@
 {
   "name": "Default",
-  "description": "Automatically probe verified Discord HTTPS and select a session strategy.",
+  "description": "Automatically probe Discord web/API/gateway/CDN/update health and select a session strategy.",
   "dns_redirect": {
     "enabled": true,
     "ipv4_resolver": "77.88.8.8",
@@ -15,9 +15,56 @@
     "timeout": 6,
     "max_ips": 2,
     "candidates": [
-      {"name": "multisplit-2", "kind": "multisplit", "priority": 1, "split_pos": 2},
-      {"name": "multidisorder-2", "kind": "multidisorder", "priority": 2, "split_pos": 2},
-      {"name": "fake-ttl-1", "kind": "fake_ttl", "priority": 3, "ttl": 1}
+      {
+        "name": "multisplit-2",
+        "kind": "multisplit",
+        "priority": 1,
+        "split_pos": 2
+      },
+      {
+        "name": "multidisorder-2",
+        "kind": "multidisorder",
+        "priority": 2,
+        "split_pos": 2
+      },
+      {
+        "name": "fake-ttl-1",
+        "kind": "fake_ttl",
+        "priority": 3,
+        "ttl": 1
+      }
+    ],
+    "health_checks": [
+      {
+        "name": "web",
+        "host": "discord.com",
+        "path": "/",
+        "kind": "http"
+      },
+      {
+        "name": "api",
+        "host": "discord.com",
+        "path": "/api/v10/gateway",
+        "kind": "json"
+      },
+      {
+        "name": "gateway",
+        "host": "gateway.discord.gg",
+        "path": "/",
+        "kind": "websocket"
+      },
+      {
+        "name": "cdn",
+        "host": "cdn.discordapp.com",
+        "path": "/",
+        "kind": "http"
+      },
+      {
+        "name": "updates",
+        "host": "discord.com",
+        "path": "/api/download?platform=win",
+        "kind": "http"
+      }
     ]
   }
 }
