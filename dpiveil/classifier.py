@@ -12,6 +12,7 @@ class PacketInfo:
     flags: str
     is_tls_client_hello: bool
     sni: Optional[str]
+    sni_offset: Optional[int] = None
 
 
 def tcp_flags(packet) -> str:
@@ -36,43 +37,43 @@ def tcp_flags(packet) -> str:
     return ",".join(flags) if flags else "-"
 
 
-def extract_sni(payload: bytes) -> tuple[bool, Optional[str]]:
+def extract_sni_details(payload: bytes) -> tuple[bool, Optional[str], Optional[int]]:
     # TLS record header: type(1) + version(2) + length(2)
     if len(payload) < 5 or payload[0] != 0x16:
-        return False, None
+        return False, None, None
 
     record_length = int.from_bytes(payload[3:5], "big")
     if len(payload) < 5 + record_length:
-        return False, None
+        return False, None, None
 
     # TLS handshake header: type(1) + length(3)
     if len(payload) < 9 or payload[5] != 0x01:
-        return False, None
+        return False, None, None
 
     pos = 9
 
     # client_version(2) + random(32)
     if len(payload) < pos + 34:
-        return True, None
+        return True, None, None
     pos += 34
 
     if len(payload) < pos + 1:
-        return True, None
+        return True, None, None
     session_id_len = payload[pos]
     pos += 1 + session_id_len
 
     if len(payload) < pos + 2:
-        return True, None
+        return True, None, None
     cipher_len = int.from_bytes(payload[pos:pos + 2], "big")
     pos += 2 + cipher_len
 
     if len(payload) < pos + 1:
-        return True, None
+        return True, None, None
     compression_len = payload[pos]
     pos += 1 + compression_len
 
     if len(payload) < pos + 2:
-        return True, None
+        return True, None, None
     extensions_len = int.from_bytes(payload[pos:pos + 2], "big")
     pos += 2
     extensions_end = min(pos + extensions_len, len(payload))
@@ -89,7 +90,7 @@ def extract_sni(payload: bytes) -> tuple[bool, Optional[str]]:
         if ext_type == 0x0000 and ext_len >= 5:
             data = payload[pos:ext_end]
             if len(data) < 5:
-                return True, None
+                return True, None, None
 
             list_len = int.from_bytes(data[0:2], "big")
             name_pos = 2
@@ -106,20 +107,26 @@ def extract_sni(payload: bytes) -> tuple[bool, Optional[str]]:
 
                 if name_type == 0:
                     try:
-                        return True, data[name_pos:name_end].decode("ascii")
+                        name = data[name_pos:name_end].decode("ascii")
+                        return True, name, pos + name_pos
                     except UnicodeDecodeError:
-                        return True, None
+                        return True, None, None
 
                 name_pos = name_end
 
         pos = ext_end
 
-    return True, None
+    return True, None, None
+
+
+def extract_sni(payload: bytes) -> tuple[bool, Optional[str]]:
+    is_client_hello, sni, _ = extract_sni_details(payload)
+    return is_client_hello, sni
 
 
 def classify_packet(packet) -> PacketInfo:
     payload = bytes(packet.payload or b"")
-    is_client_hello, sni = extract_sni(payload)
+    is_client_hello, sni, sni_offset = extract_sni_details(payload)
 
     dst_addr = getattr(packet, "dst_addr", None)
     dst_port = packet.tcp.dst_port if packet.tcp else 0
@@ -131,4 +138,5 @@ def classify_packet(packet) -> PacketInfo:
         flags=tcp_flags(packet),
         is_tls_client_hello=is_client_hello,
         sni=sni,
+        sni_offset=sni_offset,
     )

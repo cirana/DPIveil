@@ -51,8 +51,9 @@ def check_pydivert() -> bool:
 def build_strategy(profile):
     if profile.strategy == "tls_client_hello_fragment":
         chunk_size = int(profile.strategy_options.get("first_chunk_size", 32))
+        split_mode = str(profile.strategy_options.get("split_mode", "sni"))
         return TLSClientHelloFragmentStrategy(
-            FragmentConfig(first_chunk_size=chunk_size)
+            FragmentConfig(first_chunk_size=chunk_size, split_mode=split_mode)
         )
 
     raise ValueError(f"Unknown strategy: {profile.strategy}")
@@ -105,9 +106,11 @@ def run() -> int:
         return 1
     finally:
         logger.info(
-            "Final stats: %s packets | %s bytes | %s send errors",
+            "Final stats: %s packets | %s bytes | %s TLS splits | %s inbound RST | %s send errors",
             f"{engine.stats.packets:,}",
             f"{engine.stats.bytes:,}",
+            engine.stats.fragmented_client_hellos,
+            engine.stats.inbound_resets,
             engine.stats.send_errors,
         )
         logger.info("DPIveil stopped cleanly.")

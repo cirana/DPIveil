@@ -1,9 +1,10 @@
 {
   "name": "Default",
-  "description": "HTTPS profile using TLS ClientHello fragmentation.",
-  "filter": "outbound and tcp and tcp.DstPort == 443",
+  "description": "HTTPS profile using SNI-aware TLS ClientHello fragmentation.",
+  "filter": "(outbound and tcp and tcp.DstPort == 443) or (inbound and tcp and tcp.SrcPort == 443 and tcp.Rst)",
   "strategy": "tls_client_hello_fragment",
   "strategy_options": {
-    "first_chunk_size": 32
+    "first_chunk_size": 32,
+    "split_mode": "sni"
   }
 }

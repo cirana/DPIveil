@@ -11,6 +11,7 @@ from dpiveil.classifier import classify_packet
 @dataclass(frozen=True)
 class FragmentConfig:
     first_chunk_size: int = 32
+    split_mode: str = "sni"
 
 
 class TLSClientHelloFragmentStrategy:
@@ -18,6 +19,10 @@ class TLSClientHelloFragmentStrategy:
 
     def __init__(self, config: FragmentConfig | None = None) -> None:
         self.config = config or FragmentConfig()
+        if self.config.first_chunk_size < 1:
+            raise ValueError("first_chunk_size must be positive")
+        if self.config.split_mode not in {"sni", "fixed"}:
+            raise ValueError("split_mode must be 'sni' or 'fixed'")
 
     @staticmethod
     def _clone_packet(packet):
@@ -32,15 +37,24 @@ class TLSClientHelloFragmentStrategy:
         info = classify_packet(packet)
         payload = bytes(packet.payload or b"")
 
-        if (
-            not info.is_tls_client_hello
-            or packet.tcp is None
-            or len(payload) <= self.config.first_chunk_size
-        ):
+        if not info.is_tls_client_hello or packet.tcp is None:
             yield packet
             return
 
-        split_at = max(1, min(self.config.first_chunk_size, len(payload) - 1))
+        if (
+            self.config.split_mode == "sni"
+            and info.sni_offset is not None
+            and info.sni
+            and len(info.sni) > 1
+        ):
+            # Neither TCP segment carries the complete hostname by itself.
+            split_at = info.sni_offset + 1
+        else:
+            split_at = self.config.first_chunk_size
+
+        if not 0 < split_at < len(payload):
+            yield packet
+            return
 
         first = self._clone_packet(packet)
         second = self._clone_packet(packet)
