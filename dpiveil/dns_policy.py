@@ -7,6 +7,8 @@ import subprocess
 import threading
 from dataclasses import dataclass
 
+from dpiveil.constants import DISCORD_DOMAINS
+
 
 def _powershell(script: str) -> str:
     result = subprocess.run(
@@ -40,21 +42,7 @@ class DNSPolicyConfig:
     resolver: str = "1.1.1.1"
     doh_template: str = "https://cloudflare-dns.com/dns-query"
     allow_fallback_to_udp: bool = False
-    domains: tuple[str, ...] = (
-        "discord.com",
-        "discord.gg",
-        "discordapp.com",
-        "discordapp.net",
-        "discord.media",
-        "discordcdn.com",
-        "discord.dev",
-        "discord.new",
-        "discord.gift",
-        "discordstatus.com",
-        "dis.gd",
-        "discord.co",
-        "discord-attachments-uploads-prd.storage.googleapis.com",
-    )
+    domains: tuple[str, ...] = DISCORD_DOMAINS
 
     @classmethod
     def from_options(cls, options):
