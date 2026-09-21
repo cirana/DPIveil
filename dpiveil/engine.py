@@ -148,12 +148,14 @@ class PacketEngine:
                         protected_at = self._protected_flows.get(flow)
                         now = time.monotonic()
                         config = getattr(self.strategy, "config", None)
+                        protects_ip = getattr(self.strategy, "protects_ip", None)
+                        dns_protected = callable(protects_ip) and protects_ip(str(packet.src_addr))
+                        tls_protected = protected_at is not None and now - protected_at <= 8
                         if (
-                            getattr(config, "drop_suspect_rst", False)
+                            (getattr(config, "drop_suspect_rst", False) or dns_protected)
                             and syn is not None
-                            and protected_at is not None
+                            and (tls_protected or dns_protected)
                             and now - syn[2] <= 30
-                            and now - protected_at <= 8
                             and isinstance(ip_ttl, int)
                             and isinstance(ip_id, int)
                             and is_suspect_rst(syn[0], syn[1], ip_ttl, ip_id)
