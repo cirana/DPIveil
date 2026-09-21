@@ -35,11 +35,13 @@ class PacketEngine:
         logger: logging.Logger,
         strategy,
         stats_interval: float = 10.0,
+        dns_redirect=None,
     ) -> None:
         self.packet_filter = packet_filter
         self.logger = logger
         self.strategy = strategy
         self.stats_interval = stats_interval
+        self.dns_redirect = dns_redirect
         self.stats = EngineStats()
         self._last_report = time.monotonic()
         self._syn_acks: dict[tuple[str, int], tuple[int, int, float]] = {}
@@ -80,7 +82,11 @@ class PacketEngine:
         self.logger.info("Opening WinDivert engine...")
         self.logger.info("Strategy: %s", self.strategy.name)
 
-        with pydivert.WinDivert(self.packet_filter) as divert:
+        packet_filter = self.packet_filter
+        if self.dns_redirect is not None:
+            packet_filter = f"({packet_filter}) or ({self.dns_redirect.config.packet_filter})"
+            self.logger.info("DNS handling integrated into main WinDivert engine.")
+        with pydivert.WinDivert(packet_filter) as divert:
             self._divert = divert
             self.logger.info("WinDivert engine is active.")
             self.ready.set()
@@ -88,6 +94,26 @@ class PacketEngine:
             for packet in divert:
                 self.stats.packets += 1
                 self.stats.bytes += len(packet.raw)
+
+                # Handle DNS in the same WinDivert capture/reinject loop as TCP.
+                # This mirrors GoodbyeDPI's single-handle design and avoids
+                # redirected packets being recaptured by a second handle.
+                if self.dns_redirect is not None and packet.udp is not None:
+                    try:
+                        dns_packet = self.dns_redirect.process(packet)
+                        if dns_packet is not None:
+                            divert.send(dns_packet)
+                            self.stats.strategy_packets += 1
+                    except Exception:
+                        self.logger.exception("DNS redirect failed; sending packet unchanged.")
+                        try:
+                            divert.send(packet)
+                            self.stats.strategy_packets += 1
+                        except OSError as exc:
+                            self.stats.send_errors += 1
+                            self.logger.error("Could not send DNS packet: %s", exc)
+                    self._report_if_needed()
+                    continue
 
                 if packet.is_inbound:
                     ip_header = bytes(packet.raw)
