@@ -8,6 +8,7 @@ from dpiveil import __version__
 from dpiveil.engine import PacketEngine
 from dpiveil.profiles import load_profile
 from dpiveil.strategies.tls_fragment import FragmentConfig, TLSClientHelloFragmentStrategy
+from dpiveil.strategies.zapret_compat import ZapretCompatConfig, ZapretCompatStrategy
 from dpiveil.system import is_admin, is_windows
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -48,26 +49,42 @@ def check_pydivert() -> bool:
     return True
 
 
+def _target_domains(options) -> tuple[str, ...]:
+    target_domains = options.get("target_domains", [])
+    if not isinstance(target_domains, list) or any(
+        not isinstance(domain, str) for domain in target_domains
+    ):
+        raise ValueError("target_domains must be a list of hostnames")
+    return tuple(domain.lower() for domain in target_domains)
+
+
 def build_strategy(profile):
     if profile.strategy == "tls_client_hello_fragment":
         chunk_size = int(profile.strategy_options.get("first_chunk_size", 32))
         split_mode = str(profile.strategy_options.get("split_mode", "sni"))
         reverse_order = profile.strategy_options.get("reverse_order", False)
         drop_suspect_rst = profile.strategy_options.get("drop_suspect_rst", False)
-        target_domains = profile.strategy_options.get("target_domains", [])
         if not isinstance(reverse_order, bool):
             raise ValueError("reverse_order must be a boolean")
         if not isinstance(drop_suspect_rst, bool):
             raise ValueError("drop_suspect_rst must be a boolean")
-        if not isinstance(target_domains, list) or any(not isinstance(domain, str) for domain in target_domains):
-            raise ValueError("target_domains must be a list of hostnames")
         return TLSClientHelloFragmentStrategy(
             FragmentConfig(
                 first_chunk_size=chunk_size,
                 split_mode=split_mode,
                 reverse_order=reverse_order,
-                target_domains=tuple(target_domains),
+                target_domains=_target_domains(profile.strategy_options),
                 drop_suspect_rst=drop_suspect_rst,
+            )
+        )
+
+    if profile.strategy == "zapret_compat":
+        return ZapretCompatStrategy(
+            ZapretCompatConfig(
+                mode=str(profile.strategy_options.get("mode", "multisplit")),
+                split_pos=int(profile.strategy_options.get("split_pos", 2)),
+                fake_ttl=int(profile.strategy_options.get("fake_ttl", 1)),
+                target_domains=_target_domains(profile.strategy_options),
             )
         )
 
@@ -107,6 +124,10 @@ def run() -> int:
     logger.info("Profile: %s", profile.name)
     logger.info("Filter: %s", profile.filter)
     logger.info("Strategy: %s", strategy.name)
+    config = getattr(strategy, "config", None)
+    mode = getattr(config, "mode", None)
+    if mode:
+        logger.info("Strategy mode: %s", mode)
     logger.info("Press Ctrl+C to stop.")
 
     engine = PacketEngine(profile.filter, logger, strategy)
