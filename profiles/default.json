@@ -1,0 +1,5 @@
+{
+  "name": "Default",
+  "description": "Initial HTTPS traffic profile. Processing strategies will be added separately.",
+  "filter": "outbound and tcp and tcp.DstPort == 443"
+}
