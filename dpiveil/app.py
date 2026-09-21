@@ -6,7 +6,7 @@ import threading
 from pathlib import Path
 
 from dpiveil import __version__
-from dpiveil.autoselect import AutoConfig, SessionStrategy, direct_works, resolve_system, resolve_verified, test_candidates
+from dpiveil.autoselect import AutoConfig, SessionStrategy, health_check_direct, resolve_verified, test_candidates
 from dpiveil.dns_redirect import DNSConfig, DNSRedirect, flush_dns_cache
 from dpiveil.engine import PacketEngine
 from dpiveil.profiles import load_profile
@@ -189,13 +189,13 @@ def run_manual(profile, strategy, logger) -> int:
 def run_auto(profile, session, logger, dns=None) -> int:
     config = AutoConfig.from_options(profile.strategy_options)
     try:
-        try:
-            system_addresses = resolve_system(config.host, config.max_ips)
-        except OSError as exc:
-            system_addresses = []
-            logger.warning("System DNS failed: %s", exc)
-        if system_addresses and direct_works(config, system_addresses, logger):
-            logger.info("Direct HTTPS works. No TCP manipulation is needed.")
+        direct_ok, direct_details = health_check_direct(config, logger)
+        logger.info(
+            "Direct Discord health: %s",
+            ", ".join(f"{name}={'OK' if ok else 'FAIL'}" for name, ok in direct_details.items()),
+        )
+        if direct_ok:
+            logger.info("All Discord health checks work directly. No TCP manipulation is needed.")
             if dns is not None:
                 logger.info("DNS redirection remains active; press Ctrl+C to stop.")
                 try:
@@ -209,8 +209,6 @@ def run_auto(profile, session, logger, dns=None) -> int:
             return 0
         addresses = resolve_verified(config.host, config.timeout, config.max_ips)
         logger.info("Verified target addresses | %s | %s", config.host, ", ".join(addresses))
-        if system_addresses and not set(system_addresses).intersection(addresses):
-            logger.warning("System DNS differs from verified DNS; configure encrypted DNS for normal applications.")
     except KeyboardInterrupt:
         logger.info("Selection interrupted.")
         return 0
