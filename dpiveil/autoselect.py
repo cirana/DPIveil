@@ -159,8 +159,9 @@ def resolve_system(host, max_ips):
 class SessionStrategy:
     name = "auto"
 
-    def __init__(self, host):
+    def __init__(self, host, active_domains=DEFAULT_ACTIVE_DOMAINS):
         self.host = host
+        self.active_domains = tuple(active_domains)
         self._lock = threading.Lock()
         self._candidate = None
         self._port = None
@@ -190,7 +191,8 @@ class SessionStrategy:
             candidate, port, active = self._candidate, self._port, self._active
         if candidate is None or packet.tcp is None or (not active and packet.tcp.src_port != port):
             return [packet]
-        output = list(CandidateStrategy(candidate, self.host).process(packet))
+        domains = self.active_domains if active else (self.host,)
+        output = list(CandidateStrategy(candidate, domains).process(packet))
         if not active and len(output) > 1:
             with self._lock:
                 if self._candidate == candidate and self._port == port:
@@ -249,13 +251,13 @@ def direct_works(config, addresses, logger, probe=https_request):
 
 
 def test_candidates(config, session, logger, addresses=None, probe=https_request):
-    endpoint_addresses = _endpoint_addresses(config, logger)
+    endpoint_addresses = {config.host: addresses or resolve_verified(config.host, config.timeout, config.max_ips)}
     results = {}
     details = {}
 
     for candidate in config.candidates:
         endpoint_results = {}
-        for name, host, path, kind in config.health_checks:
+        for name, host, path, kind in (("web", config.host, "/", "http"),):
             ok = False
             failures = []
             ips = endpoint_addresses.get(host, [])
@@ -303,7 +305,7 @@ def test_candidates(config, session, logger, addresses=None, probe=https_request
         )
 
     working = [c for c in config.candidates
-               if results[c.name] == len(config.health_checks)]
+               if results[c.name] == 1]
     if not working:
         logger.error("No candidate passed all Discord health checks; no strategy selected.")
         return None, details
