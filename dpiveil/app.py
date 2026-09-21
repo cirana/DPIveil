@@ -6,7 +6,7 @@ import threading
 from pathlib import Path
 
 from dpiveil import __version__
-from dpiveil.autoselect import AutoConfig, SessionStrategy, health_check_direct, resolve_verified, test_candidates
+from dpiveil.autoselect import AutoConfig, SessionStrategy, diagnose_desktop_endpoints, resolve_verified, test_candidates
 from dpiveil.dns_proxy import DNSProxyConfig, LocalDNSProxy
 from dpiveil.engine import PacketEngine
 from dpiveil.profiles import load_profile
@@ -204,20 +204,19 @@ def run_auto(profile, session, logger, dns=None) -> int:
             logger.error("Could not start WinDivert engine: %s", errors or "engine not ready")
             return 1
 
-        direct_ok, direct_details = health_check_direct(config, logger)
-        logger.info(
-            "Direct Discord health: %s",
-            ", ".join(f"{name}={'OK' if ok else 'FAIL'}" for name, ok in direct_details.items()),
-        )
-        if direct_ok:
-            logger.info("All Discord health checks work directly. No TCP manipulation is needed.")
-        else:
-            addresses = resolve_verified(config.host, config.timeout, config.max_ips)
-            logger.info("Verified target addresses | %s | %s", config.host, ", ".join(addresses))
-            selected, _ = test_candidates(config, session, logger, addresses)
-            if selected is None:
-                return 2
-            logger.info("Active strategy for this session: %s", selected.name)
+        addresses = resolve_verified(config.host, config.timeout, config.max_ips)
+        logger.info("Verified target addresses | %s | %s", config.host, ", ".join(addresses))
+        selected, _ = test_candidates(config, session, logger, addresses)
+        if selected is None:
+            return 2
+        logger.info("Active strategy for this session: %s", selected.name)
+
+        desktop_details = diagnose_desktop_endpoints(config, logger)
+        if desktop_details:
+            logger.info(
+                "Desktop Discord diagnostics: %s",
+                ", ".join(f"{name}={'OK' if ok else 'FAIL'}" for name, ok in desktop_details.items()),
+            )
 
         while thread.is_alive():
             thread.join(timeout=0.5)
