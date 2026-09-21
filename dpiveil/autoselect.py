@@ -15,6 +15,8 @@ from dpiveil.strategies.candidates import Candidate, CandidateStrategy
 
 DEFAULT_HEALTH_CHECKS = (
     ("web", "discord.com", "/", "http"),
+    ("updates", "updates.discord.com", "/", "http"),
+    ("gateway", "gateway.discord.gg", "/?v=10&encoding=json", "websocket"),
 )
 
 DEFAULT_ACTIVE_DOMAINS = (
@@ -177,13 +179,16 @@ class SessionStrategy:
         self._lock = threading.Lock()
         self._candidate = None
         self._port = None
+        self._probe_host = host
         self._active = False
         self._applied = False
 
-    def set_probe(self, candidate, port=None):
+    def set_probe(self, candidate, port=None, host=None):
         with self._lock:
             self._candidate = candidate
             self._port = port
+            if host is not None:
+                self._probe_host = host
             self._active = False
             self._applied = False
 
@@ -200,10 +205,10 @@ class SessionStrategy:
 
     def process(self, packet):
         with self._lock:
-            candidate, port, active = self._candidate, self._port, self._active
+            candidate, port, active, probe_host = self._candidate, self._port, self._active, self._probe_host
         if candidate is None or packet.tcp is None or (not active and packet.tcp.src_port != port):
             return [packet]
-        domains = self.active_domains if active else (self.host,)
+        domains = self.active_domains if active else (probe_host,)
         output = list(CandidateStrategy(candidate, domains).process(packet))
         if not active and len(output) > 1:
             with self._lock:
@@ -263,22 +268,24 @@ def direct_works(config, addresses, logger, probe=https_request):
 
 
 def test_candidates(config, session, logger, addresses=None, probe=https_request):
-    endpoint_addresses = {config.host: addresses or resolve_verified(config.host, config.timeout, config.max_ips)}
+    endpoint_addresses = _endpoint_addresses(config, logger)
+    if addresses is not None:
+        endpoint_addresses[config.host] = addresses
     results = {}
     details = {}
 
     for candidate in config.candidates:
         endpoint_results = {}
-        for name, host, path, kind in (("web", config.host, "/", "http"),):
+        for name, host, path, kind in config.health_checks:
             ok = False
             failures = []
             ips = endpoint_addresses.get(host, [])
             for ip in ips:
-                session.set_probe(candidate)
+                session.set_probe(candidate, host=host)
                 try:
                     status, _ = _check_probe(
                         kind, host, ip, path, config.timeout,
-                        on_connected=lambda port, c=candidate: session.set_probe(c, port),
+                        on_connected=lambda port, c=candidate, h=host: session.set_probe(c, port, h),
                         probe=probe,
                     )
                     if not session.probe_applied():
@@ -317,7 +324,7 @@ def test_candidates(config, session, logger, addresses=None, probe=https_request
         )
 
     working = [c for c in config.candidates
-               if results[c.name] == 1]
+               if results[c.name] == len(config.health_checks)]
     if not working:
         logger.error("No candidate passed all Discord health checks; no strategy selected.")
         return None, details
