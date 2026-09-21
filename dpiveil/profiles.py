@@ -13,7 +13,6 @@ class Profile:
     strategy: str
     strategy_options: dict[str, object]
     dns_policy: dict[str, object] = field(default_factory=dict)
-    dns_redirect: dict[str, object] = field(default_factory=dict)
 
 
 def load_profile(path: Path) -> Profile:
@@ -26,5 +25,4 @@ def load_profile(path: Path) -> Profile:
         strategy=str(data.get("strategy", "passthrough")),
         strategy_options=dict(data.get("strategy_options", {})),
         dns_policy=dict(data.get("dns_policy", {})),
-        dns_redirect=dict(data.get("dns_redirect", {})),
     )
