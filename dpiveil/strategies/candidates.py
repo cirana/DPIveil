@@ -21,15 +21,18 @@ class Candidate:
             raise ValueError("Invalid split position or TTL")
 
 
-
 class CandidateStrategy:
-    def __init__(self, candidate: Candidate, domain: str = "discord.com"):
+    def __init__(self, candidate: Candidate, domains=("discord.com",)):
         self.candidate = candidate
-        self.domain = domain
+        if isinstance(domains, str):
+            domains = (domains,)
+        self.domains = tuple(domain.lower() for domain in domains)
         self.name = candidate.name
         self._strategy = ZapretCompatStrategy(ZapretCompatConfig(
-            mode=candidate.kind, split_pos=candidate.split_pos,
-            fake_ttl=candidate.ttl, target_domains=(domain,),
+            mode=candidate.kind,
+            split_pos=candidate.split_pos,
+            fake_ttl=candidate.ttl,
+            target_domains=self.domains,
         ))
 
     def process(self, packet):
