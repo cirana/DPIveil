@@ -196,6 +196,38 @@ class AutoTests(unittest.TestCase):
         packet.tcp.src_port = 60000
         self.assertEqual(len(list(session.process(packet))), 2)
 
+    def test_active_strategy_learns_rotated_discord_ip_from_sni(self):
+        session = SessionStrategy("discord.com")
+        candidate = self.candidates[0]
+        session.record_dns_answer("discord.com", ["192.0.2.1"])
+        session.activate(candidate)
+
+        packet = FakePacket()
+        packet.payload = client_hello("updates.discord.com")
+        packet.dst_addr = "192.0.2.2"
+        packet.tcp.src_port = 51234
+        FakePacket.source = packet
+
+        output = list(session.process(packet))
+        self.assertEqual(len(output), 2)
+        self.assertTrue(session.protects_ip("192.0.2.2"))
+
+    def test_active_fake_ttl_still_applies_to_known_ip(self):
+        session = SessionStrategy("discord.com")
+        candidate = self.candidates[2]
+        session.record_dns_answer("discord.com", ["192.0.2.1"])
+        session.activate(candidate)
+
+        packet = FakePacket()
+        packet.payload = client_hello("discord.com")
+        packet.dst_addr = "192.0.2.1"
+        packet.tcp.src_port = 51234
+        FakePacket.source = packet
+
+        fake, original = list(session.process(packet))
+        self.assertEqual(fake.ip.ttl, 1)
+        self.assertIs(original, packet)
+
     def test_dns_reply_requires_verified_https_and_address(self):
         calls = []
 

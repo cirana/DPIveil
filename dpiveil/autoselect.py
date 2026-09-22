@@ -11,6 +11,7 @@ import threading
 from urllib.parse import quote
 from dataclasses import dataclass
 
+from dpiveil.classifier import classify_packet
 from dpiveil.constants import DISCORD_DOMAINS
 from dpiveil.strategies.candidates import Candidate, CandidateStrategy
 
@@ -295,6 +296,7 @@ class SessionStrategy:
             return [packet]
 
         destination = str(getattr(packet, "dst_addr", ""))
+        learned_from_sni = False
         if candidate.transport == "udp":
             udp = getattr(packet, "udp", None)
             if (
@@ -317,11 +319,28 @@ class SessionStrategy:
             if not active and probe_addresses and destination not in probe_addresses:
                 return [packet]
             if active and self._tracked_ips and not self.protects_ip(destination):
-                return [packet]
+                # Discord CDN addresses can rotate after the initial DNS seed.
+                # A TLS ClientHello carries the authoritative hostname, so
+                # learn a new address from a matching SNI before applying the
+                # selected strategy.  This prevents updates.discord.com (and
+                # similar endpoints) from falling back to an unmodified first
+                # ClientHello and waiting for repeated TCP resets.
+                info = classify_packet(packet)
+                if not (info.is_tls_client_hello and self._matches_active_domain(info.sni)):
+                    return [packet]
+                with self._lock:
+                    if self._active:
+                        self._tracked_ips.add(destination)
+                learned_from_sni = True
 
         domains = self.active_domains if active else (probe_host,)
         strategy = CandidateStrategy(candidate, domains)
-        force_ip = active and self.protects_ip(destination)
+        force_ip = (
+            active
+            and not learned_from_sni
+            and self.protects_ip(destination)
+            and candidate.canonical_kind in {"multisplit", "multidisorder", "fake_badseq"}
+        )
         output = list(strategy.process(packet, force_ip=force_ip))
         changed = len(output) > 1
         if len(output) == 1:
