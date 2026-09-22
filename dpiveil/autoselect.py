@@ -6,6 +6,7 @@ import ipaddress
 import json
 import socket
 import ssl
+import subprocess
 import threading
 from urllib.parse import quote
 from dataclasses import dataclass
@@ -136,6 +137,47 @@ def websocket_probe(host, address, path, timeout, on_connected=None):
     return status, body
 
 
+def quic_request(host, address, path, timeout, on_connected=None):
+    """Perform a real certificate-checked HTTP/3 request with curl.
+
+    Windows 10/11 ships curl with Schannel certificate validation.  The
+    command intentionally does not pass ``--insecure``/``-k``; an unsupported
+    HTTP/3 build simply makes this candidate fail and lets the selector try
+    the remaining candidates.
+    """
+    del on_connected  # kept for the same probe callback shape as HTTPS
+    command = [
+        "curl.exe",
+        "--http3-only",
+        "--silent",
+        "--show-error",
+        "--connect-timeout", str(max(1, int(timeout))),
+        "--max-time", str(max(1, int(timeout))),
+        "--resolve", f"{host}:443:{address}",
+        "--output", "NUL",
+        "--write-out", "%{http_code}",
+        f"https://{host}{path}",
+    ]
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=max(2, float(timeout) + 2),
+        check=False,
+    )
+    output = (result.stdout or "").strip()
+    try:
+        status = int(output[-3:])
+    except (ValueError, TypeError):
+        status = 0
+    if result.returncode != 0 or not 200 <= status < 500:
+        detail = (result.stderr or output or "curl HTTP/3 failed").strip()
+        raise OSError(f"HTTP/3 probe failed ({result.returncode}, status={status}): {detail}")
+    return status, b""
+
+
 def resolve_verified(host, timeout, max_ips):
     # DoH's own TLS identity is verified even though system DNS is poisoned.
     last_error = None
@@ -176,19 +218,30 @@ class SessionStrategy:
         self._lock = threading.Lock()
         self._candidate = None
         self._port = None
+        self._probe_addresses = set()
         self._probe_host = host
         self._active = False
         self._applied = False
         self._tracked_ips = set()
 
-    def set_probe(self, candidate, port=None, host=None):
+    def set_probe(self, candidate, port=None, host=None, addresses=None):
         with self._lock:
             self._candidate = candidate
             self._port = port
             if host is not None:
                 self._probe_host = host
+            self._probe_addresses = {str(address) for address in (addresses or ())}
             self._active = False
             self._applied = False
+
+    def bind_probe(self, candidate, port, host=None):
+        """Bind a TCP probe's ephemeral port without resetting SYN results."""
+        with self._lock:
+            if self._candidate != candidate or self._active:
+                return
+            self._port = port
+            if host is not None:
+                self._probe_host = host
 
     def probe_applied(self):
         with self._lock:
@@ -220,21 +273,63 @@ class SessionStrategy:
         with self._lock:
             self._candidate = candidate
             self._port = None
+            self._probe_addresses = set()
             self._active = True
             self.name = candidate.name
 
     def process(self, packet):
         with self._lock:
-            candidate, port, active, probe_host = self._candidate, self._port, self._active, self._probe_host
-        if candidate is None or packet.tcp is None or (not active and packet.tcp.src_port != port):
+            candidate = self._candidate
+            port = self._port
+            active = self._active
+            probe_host = self._probe_host
+            probe_addresses = set(self._probe_addresses)
+        if candidate is None:
             return [packet]
+
+        destination = str(getattr(packet, "dst_addr", ""))
+        if candidate.transport == "udp":
+            udp = getattr(packet, "udp", None)
+            if (
+                udp is None
+                or bool(getattr(packet, "is_inbound", False))
+                or int(getattr(udp, "dst_port", 0)) != 443
+                or (not active and probe_addresses and destination not in probe_addresses)
+                or (active and self._tracked_ips and not self.protects_ip(destination))
+            ):
+                return [packet]
+        else:
+            tcp = getattr(packet, "tcp", None)
+            if tcp is None or bool(getattr(packet, "is_inbound", False)):
+                return [packet]
+            # syndata acts on the SYN before an ephemeral port is available;
+            # other TCP candidates are bound to the HTTPS probe port.
+            is_syn_data = candidate.canonical_kind == "syndata" and bool(getattr(tcp, "syn", False))
+            if not active and not is_syn_data and tcp.src_port != port:
+                return [packet]
+            if not active and probe_addresses and destination not in probe_addresses:
+                return [packet]
+            if active and self._tracked_ips and not self.protects_ip(destination):
+                return [packet]
+
         domains = self.active_domains if active else (probe_host,)
         strategy = CandidateStrategy(candidate, domains)
-        force_ip = active and self.protects_ip(getattr(packet, "dst_addr", ""))
+        force_ip = active and self.protects_ip(destination)
         output = list(strategy.process(packet, force_ip=force_ip))
-        if not active and len(output) > 1:
+        changed = len(output) > 1
+        if len(output) == 1:
+            outgoing = output[0]
+            changed = (
+                bytes(getattr(outgoing, "payload", b"") or b"")
+                != bytes(getattr(packet, "payload", b"") or b"")
+                or getattr(getattr(outgoing, "tcp", None), "seq_num", None)
+                != getattr(getattr(packet, "tcp", None), "seq_num", None)
+                or bytes(getattr(outgoing, "raw", b"") or b"")
+                != bytes(getattr(packet, "raw", b"") or b"")
+            )
+        if not active and changed:
             with self._lock:
-                if self._candidate == candidate and self._port == port:
+                if self._candidate == candidate:
                     self._applied = True
         return output
 
@@ -289,57 +384,83 @@ def direct_works(config, addresses, logger, probe=https_request):
     return success
 
 
-def test_candidates(config, session, logger, addresses=None, probe=https_request):
-    """Select the first priority candidate that restores verified Discord web HTTPS.
+def test_candidates(
+    config,
+    session,
+    logger,
+    addresses=None,
+    probe=https_request,
+    quic_probe=quic_request,
+):
+    """Test every candidate, then select the best verified result.
 
-    Desktop endpoints are intentionally not part of selection: a synthetic
-    gateway/update probe can fail even when the real client works, and waiting
-    on those probes made startup unnecessarily slow.
+    TCP candidates require a completed certificate-checked HTTPS response.
+    The UDP candidate uses curl's certificate-checked HTTP/3 path.  A packet
+    being intercepted or a socket merely connecting is never considered a
+    success.  Testing continues after failures and after the first success so
+    the deterministic priority ordering can be compared at the end.
     """
     ips = addresses or resolve_verified(config.host, config.timeout, config.max_ips)
     details = {}
+    successful = []
 
     for candidate in sorted(config.candidates, key=lambda c: (c.priority, c.name)):
         ok = False
         failures = []
         for ip in ips:
-            session.set_probe(candidate, host=config.host)
+            session.set_probe(candidate, host=config.host, addresses=(ip,))
             try:
-                status, _ = _check_probe(
-                    "http", config.host, ip, "/", config.timeout,
-                    on_connected=lambda port, c=candidate: session.set_probe(c, port, config.host),
-                    probe=probe,
-                )
+                if candidate.transport == "udp":
+                    status, _ = quic_probe(config.host, ip, "/", config.timeout)
+                    check_name = "quic"
+                else:
+                    status, _ = _check_probe(
+                        "http", config.host, ip, "/", config.timeout,
+                        on_connected=lambda port, c=candidate: session.bind_probe(c, port, config.host),
+                        probe=probe,
+                    )
+                    check_name = "web"
                 if not session.probe_applied():
-                    raise ValueError("Candidate did not alter the probe ClientHello")
+                    raise ValueError("Candidate did not alter the probe packet")
                 logger.info(
-                    "Web probe | %s | %s | %s | status=%s",
-                    candidate.name, config.host, ip, status,
+                    "%s probe | %s | %s | %s | status=%s",
+                    check_name.capitalize(), candidate.name, config.host, ip, status,
                 )
                 ok = True
-                break
             except Exception as exc:
                 failures.append(str(exc))
                 logger.warning(
-                    "Web probe | %s | %s | %s | failed: %s",
+                    "%s probe | %s | %s | %s | failed: %s",
+                    "QUIC" if candidate.transport == "udp" else "Web",
                     candidate.name, config.host, ip, exc,
                 )
             finally:
                 session.set_probe(None)
 
-        details[candidate.name] = {"web": ok}
+        check_name = "quic" if candidate.transport == "udp" else "web"
+        details[candidate.name] = {check_name: ok}
         if ok:
-            session.activate(candidate)
-            logger.info("Selected session strategy: %s", candidate.name)
-            return candidate, details
+            successful.append(candidate)
+            logger.info("Candidate passed %s health check: %s", check_name, candidate.name)
+        else:
+            logger.warning(
+                "Candidate %s failed Discord %s health check%s",
+                candidate.name,
+                check_name,
+                f": {'; '.join(failures[:2])}" if failures else "",
+            )
 
-        logger.warning(
-            "Candidate %s failed Discord web health check%s",
-            candidate.name,
-            f": {'; '.join(failures[:2])}" if failures else "",
+    if successful:
+        selected = min(successful, key=lambda c: (c.priority, c.name))
+        session.activate(selected)
+        logger.info(
+            "Selected session strategy: %s (tested %s successful candidate(s))",
+            selected.name,
+            len(successful),
         )
+        return selected, details
 
-    logger.error("No candidate passed the Discord web health check; no strategy selected.")
+    logger.error("No candidate passed verified Discord health checks; no strategy selected.")
     return None, details
 
 

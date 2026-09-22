@@ -24,6 +24,7 @@ class EngineStats:
     sni_detected: int = 0
     strategy_packets: int = 0
     fragmented_client_hellos: int = 0
+    fragmented_udp_packets: int = 0
     inbound_resets: int = 0
     suspect_resets_dropped: int = 0
 
@@ -61,12 +62,13 @@ class PacketEngine:
             return
 
         self.logger.info(
-            "Stats: %s packets | %s bytes | TLS ClientHello: %s | SNI: %s | fragmented: %s | inbound RST: %s | dropped RST: %s | strategy output: %s | %s send errors",
+            "Stats: %s packets | %s bytes | TLS ClientHello: %s | SNI: %s | fragmented: %s | UDP fragments: %s | inbound RST: %s | dropped RST: %s | strategy output: %s | %s send errors",
             f"{self.stats.packets:,}",
             f"{self.stats.bytes:,}",
             self.stats.tls_client_hellos,
             self.stats.sni_detected,
             self.stats.fragmented_client_hellos,
+            self.stats.fragmented_udp_packets,
             self.stats.inbound_resets,
             self.stats.suspect_resets_dropped,
             self.stats.strategy_packets,
@@ -186,6 +188,16 @@ class PacketEngine:
                         self.strategy.name,
                         len(outgoing_packets[0].payload),
                         len(outgoing_packets[1].payload),
+                    )
+                udp = getattr(packet, "udp", None)
+                if udp is not None and len(outgoing_packets) == 2:
+                    self.stats.fragmented_udp_packets += 1
+                    self.logger.info(
+                        "UDP strategy | %s:%s | strategy=%s | fragments=%s",
+                        getattr(packet, "dst_addr", "?"),
+                        getattr(udp, "dst_port", "?"),
+                        self.strategy.name,
+                        len(outgoing_packets),
                     )
 
                 sent_count = 0

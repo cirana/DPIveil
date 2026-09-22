@@ -7,7 +7,7 @@
     "doh_template": "https://cloudflare-dns.com/dns-query",
     "allow_fallback_to_udp": false
   },
-  "filter": "(outbound and tcp and tcp.DstPort == 443) or (inbound and tcp and tcp.SrcPort == 443 and (tcp.Syn or tcp.Rst))",
+  "filter": "(outbound and tcp and tcp.DstPort == 443) or (outbound and udp and udp.DstPort == 443) or (inbound and tcp and tcp.SrcPort == 443 and (tcp.Syn or tcp.Rst))",
   "strategy": "auto",
   "strategy_options": {
     "host": "discord.com",
@@ -31,6 +31,25 @@
         "kind": "fake_ttl",
         "priority": 3,
         "ttl": 1
+      },
+      {
+        "name": "fake+badseq",
+        "kind": "fake+badseq",
+        "priority": 4,
+        "badseq_increment": -10000,
+        "badack_increment": -66000
+      },
+      {
+        "name": "syndata",
+        "kind": "syndata",
+        "priority": 5
+      },
+      {
+        "name": "ipfrag2-8",
+        "kind": "ipfrag2-8",
+        "priority": 6,
+        "ipfrag_pos": 8,
+        "transport": "udp"
       }
     ]
   }

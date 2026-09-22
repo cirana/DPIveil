@@ -10,6 +10,7 @@ from dpiveil.autoselect import (
     AutoConfig,
     SessionStrategy,
     diagnose_desktop_endpoints,
+    direct_works,
     resolve_system,
     resolve_verified,
     test_candidates,
@@ -217,6 +218,23 @@ def run_auto(profile, session, logger) -> int:
     try:
         if not engine.ready.wait(timeout=5) or errors or not thread.is_alive():
             logger.error("Could not start WinDivert engine: %s", errors or "engine not ready")
+            return 1
+
+        # Check the normal, system-resolved HTTPS path first.  A valid TLS
+        # response means packet manipulation is unnecessary for this session.
+        try:
+            system_addresses = resolve_system(config.host, config.max_ips)
+        except OSError as exc:
+            system_addresses = []
+            logger.info("System DNS probe unavailable: %s", exc)
+        if system_addresses and direct_works(config, system_addresses, logger):
+            logger.info("Direct verified HTTPS works; no DPI strategy selected.")
+            while thread.is_alive():
+                thread.join(timeout=0.5)
+            if errors:
+                logger.error("WinDivert engine stopped: %s", errors[0])
+                return 1
+            logger.error("WinDivert engine stopped unexpectedly.")
             return 1
 
         addresses = resolve_verified(config.host, config.timeout, config.max_ips)

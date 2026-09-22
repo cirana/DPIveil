@@ -37,7 +37,7 @@ class AutoTests(unittest.TestCase):
         self.assertTrue(direct_works(self.config, ["192.0.2.1", "192.0.2.2"], self.logger, probe))
         self.assertEqual(calls, ["192.0.2.1", "192.0.2.2"])
 
-    def test_first_working_candidate_is_selected_by_priority(self):
+    def test_all_working_candidates_are_tested_and_priority_selects(self):
         session = SessionStrategy("discord.com")
         seen = []
         packet = FakePacket()
@@ -47,6 +47,7 @@ class AutoTests(unittest.TestCase):
 
         def probe(host, ip, path, timeout, on_connected, accept=None):
             on_connected(51234)
+            packet.dst_addr = ip
             session.process(packet)
             seen.append((session._candidate.name, ip))
             if session._candidate.name == "split" and ip.endswith(".1"):
@@ -65,9 +66,17 @@ class AutoTests(unittest.TestCase):
         self.assertEqual(session.name, "split")
         self.assertEqual(
             seen,
-            [("split", "192.0.2.1"), ("split", "192.0.2.2")],
+            [
+                ("split", "192.0.2.1"), ("split", "192.0.2.2"),
+                ("disorder", "192.0.2.1"), ("disorder", "192.0.2.2"),
+                ("fake", "192.0.2.1"), ("fake", "192.0.2.2"),
+            ],
         )
-        self.assertEqual(details, {"split": {"web": True}})
+        self.assertEqual(details, {
+            "split": {"web": True},
+            "disorder": {"web": True},
+            "fake": {"web": True},
+        })
 
     def test_failed_candidates_fall_through_in_priority_order(self):
         session = SessionStrategy("discord.com")
@@ -79,6 +88,7 @@ class AutoTests(unittest.TestCase):
 
         def probe(host, ip, path, timeout, on_connected, accept=None):
             on_connected(51234)
+            packet.dst_addr = ip
             session.process(packet)
             seen.append(session._candidate.name)
             if session._candidate.name != "disorder":
@@ -94,10 +104,11 @@ class AutoTests(unittest.TestCase):
         )
 
         self.assertEqual(selected.name, "disorder")
-        self.assertEqual(seen, ["split", "disorder"])
+        self.assertEqual(seen, ["split", "disorder", "fake"])
         self.assertEqual(details, {
             "split": {"web": False},
             "disorder": {"web": True},
+            "fake": {"web": False},
         })
 
     def test_no_verified_reply_keeps_passthrough(self):

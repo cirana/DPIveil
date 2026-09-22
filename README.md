@@ -60,9 +60,16 @@ Varsayılan adaylar:
 multisplit-2
 multidisorder-2
 fake-ttl-1
+fake+badseq
+syndata
+ipfrag2-8 (QUIC/UDP)
 ```
 
-İlk başarılı strateji o oturum için otomatik etkinleştirilir.
+Her aday, gerçek ve sertifika doğrulamalı HTTPS yanıtı (QUIC adayı için
+sertifika doğrulamalı HTTP/3 yanıtı) alınarak test edilir. Tüm adaylar
+denendikten sonra `priority`, ardından ad sırasına göre en az müdahaleci
+başarılı yöntem o oturum için etkinleştirilir. Hiçbir aday çalışmazsa program
+başarılıymış gibi rastgele bir yöntem seçmez.
 
 Discord masaüstü istemcisinin bazı ek endpoint'leri de seçimden sonra tanılama amacıyla kontrol edilir. Bu kontroller strateji seçimini değiştirmez.
 
@@ -148,7 +155,10 @@ Varsayılan otomatik strateji yapılandırması:
     "candidates": [
       {"name": "multisplit-2", "kind": "multisplit", "priority": 1, "split_pos": 2},
       {"name": "multidisorder-2", "kind": "multidisorder", "priority": 2, "split_pos": 2},
-      {"name": "fake-ttl-1", "kind": "fake_ttl", "priority": 3, "ttl": 1}
+      {"name": "fake-ttl-1", "kind": "fake_ttl", "priority": 3, "ttl": 1},
+      {"name": "fake+badseq", "kind": "fake+badseq", "priority": 4},
+      {"name": "syndata", "kind": "syndata", "priority": 5},
+      {"name": "ipfrag2-8", "kind": "ipfrag2-8", "priority": 6, "ipfrag_pos": 8, "transport": "udp"}
     ]
   }
 }
@@ -165,6 +175,7 @@ dpiveil/
   engine.py       WinDivert paket motoru
   profiles.py     profil yükleme
   strategies/     DPI stratejileri
+    advanced.py    fake+badseq, syndata ve QUIC ipfrag2
 
 profiles/
   default.json    varsayılan yapılandırma
@@ -196,7 +207,10 @@ WinDivert paket motoru
 Oturum boyunca seçilen strateji
 ```
 
-WinDivert motoru TCP/443 trafiğini işler. DNS paketleri WinDivert üzerinden yakalanmaz; DNS tarafı Windows'un kendi NRPT + DoH altyapısına bırakılmıştır.
+WinDivert motoru TCP/443 ve QUIC için UDP/443 trafiğini işler. `ipfrag2-8`
+yalnızca IPv4 UDP paketlerini iki gerçek IP parçasına ayırır; IPv6 ve TFO SYN
+paketleri değiştirilmeden geçirilir. DNS paketleri WinDivert üzerinden
+yakalanmaz; DNS tarafı Windows'un kendi NRPT + DoH altyapısına bırakılmıştır.
 
 ---
 
