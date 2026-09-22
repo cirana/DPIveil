@@ -52,7 +52,7 @@ TLS sertifika doğrulaması ve HSTS devre dışı bırakılmaz.
 
 ### 2. DPI stratejisi
 
-DPIveil Discord'a doğrulanmış HTTPS bağlantıları göndererek aday stratejileri sırayla test eder.
+DPIveil Discord'a doğrulanmış HTTPS bağlantıları göndererek aday stratejileri tek tek test eder.
 
 Varsayılan adaylar:
 
