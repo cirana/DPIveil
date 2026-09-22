@@ -188,10 +188,11 @@ def run_manual(profile, strategy, logger) -> int:
         return 1
     finally:
         logger.info(
-            "Final stats: %s packets | %s bytes | %s TLS splits | %s inbound RST | %s dropped RST | %s send errors",
+            "Final stats: %s packets | %s bytes | %s TLS splits | %s UDP fragments | %s inbound RST | %s dropped RST | %s send errors",
             f"{engine.stats.packets:,}",
             f"{engine.stats.bytes:,}",
             engine.stats.fragmented_client_hellos,
+            engine.stats.fragmented_udp_packets,
             engine.stats.inbound_resets,
             engine.stats.suspect_resets_dropped,
             engine.stats.send_errors,
@@ -269,9 +270,11 @@ def run_auto(profile, session, logger) -> int:
         engine.stop()
         thread.join(timeout=5)
         logger.info(
-            "Final stats: %s packets | %s bytes | %s send errors",
+            "Final stats: %s packets | %s bytes | %s TLS splits | %s UDP fragments | %s send errors",
             f"{engine.stats.packets:,}",
             f"{engine.stats.bytes:,}",
+            engine.stats.fragmented_client_hellos,
+            engine.stats.fragmented_udp_packets,
             engine.stats.send_errors,
         )
 
