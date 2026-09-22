@@ -173,8 +173,8 @@ class IPFragment2Config:
     position: int = 8
 
     def __post_init__(self):
-        if self.position < 8 or self.position % 8:
-            raise ValueError("ipfrag2 position must be a multiple of 8 and at least 8")
+        if self.position < 8 or self.position > 65528 or self.position % 8:
+            raise ValueError("ipfrag2 position must be a multiple of 8 between 8 and 65528")
 
 
 class IPFragment2Strategy:

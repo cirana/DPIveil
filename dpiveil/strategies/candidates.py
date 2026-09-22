@@ -51,9 +51,16 @@ class Candidate:
             raise ValueError("Invalid split position or TTL")
         if not isinstance(self.badseq_increment, int) or not isinstance(self.badack_increment, int):
             raise ValueError("Bad sequence increments must be integers")
-        if self.ipfrag_pos < 8 or self.ipfrag_pos % 8:
+        ipfrag_pos = self.ipfrag_pos
+        # Some blockcheck exports call the fragment point ``split_pos``.
+        if _canonical_kind(self.kind) == "ipfrag2" and ipfrag_pos == 8 and self.split_pos != 2:
+            ipfrag_pos = self.split_pos
+            object.__setattr__(self, "ipfrag_pos", ipfrag_pos)
+        if ipfrag_pos < 8 or ipfrag_pos % 8:
             raise ValueError("ipfrag_pos must be a multiple of 8 and at least 8")
         transport = self.protocol if self.protocol is not None else self.transport
+        if transport == "quic":
+            transport = "udp"
         if transport == "auto":
             transport = "udp" if _canonical_kind(self.kind) == "ipfrag2" else "tcp"
         if transport not in {"tcp", "udp"}:
