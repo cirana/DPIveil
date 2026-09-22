@@ -11,17 +11,18 @@ from dpiveil.autoselect import (
     SessionStrategy,
     diagnose_desktop_endpoints,
     direct_works,
-    resolve_system,
-    resolve_verified,
+    test_cached_candidate,
     test_candidates,
 )
 from dpiveil.dns_policy import DNSPolicyConfig, WindowsDNSPolicy
 from dpiveil.engine import PacketEngine
+from dpiveil.probes import resolve_system, resolve_verified
 from dpiveil.profiles import load_profile
 from dpiveil.strategies.tls_fragment import FragmentConfig, TLSClientHelloFragmentStrategy
 from dpiveil.strategies.zapret_compat import ZapretCompatConfig, ZapretCompatStrategy
 from dpiveil.runtime import configure_pydivert, log_dir, resource_root
 from dpiveil.system import is_admin, is_windows, register_console_close_handler
+from dpiveil.strategy_cache import StrategyCache, network_key
 
 LOG_DIR = log_dir()
 DEFAULT_PROFILE = resource_root() / "profiles" / "default.json"
@@ -204,6 +205,10 @@ def run_manual(profile, strategy, logger) -> int:
 
 def run_auto(profile, session, logger) -> int:
     config = AutoConfig.from_options(profile.strategy_options)
+    cache = StrategyCache(logger=logger)
+    cache_key = network_key()
+    if cache_key is None:
+        logger.info("Strategy cache unavailable; full automatic selection will be used.")
     engine = PacketEngine(profile.filter, logger, session)
     errors = []
 
@@ -241,9 +246,22 @@ def run_auto(profile, session, logger) -> int:
         addresses = resolve_verified(config.host, config.timeout, config.max_ips)
         session.record_dns_answer(config.host, addresses)
         logger.info("Verified target addresses | %s | %s", config.host, ", ".join(addresses))
-        selected, _ = test_candidates(config, session, logger, addresses)
+        selected = None
+        cached_candidate = cache.load(cache_key, config)
+        if cached_candidate is not None:
+            logger.info("Cached strategy found for this network: %s; verifying.", cached_candidate.name)
+            selected = test_cached_candidate(
+                config, session, logger, cached_candidate, addresses,
+            )
+        if selected is None:
+            if cached_candidate is not None:
+                logger.info("Cached strategy failed; running full automatic candidate scan.")
+            else:
+                logger.info("No valid cached strategy; running full automatic candidate scan.")
+            selected, _ = test_candidates(config, session, logger, addresses)
         if selected is None:
             return 2
+        cache.save(cache_key, config, selected)
         logger.info("Active strategy for this session: %s", selected.name)
 
         desktop_details = diagnose_desktop_endpoints(config, logger)

@@ -8,7 +8,16 @@ from unittest.mock import patch
 from test_tls_fragment import FakePacket, client_hello
 
 with patch.dict(sys.modules, {"pydivert": types.SimpleNamespace(Packet=FakePacket, WinDivert=None)}):
-    from dpiveil.autoselect import AutoConfig, SessionStrategy, direct_works, resolve_verified, test_candidates
+    from dpiveil.autoselect import (
+        AutoConfig,
+        SessionStrategy,
+        direct_works,
+        resolve_verified,
+        test_cached_candidate,
+        test_candidates,
+    )
+    from dpiveil.probes import https_request as probes_https_request
+    from dpiveil.autoselect import https_request as autoselect_https_request
     from dpiveil.strategies.candidates import Candidate
 
 
@@ -74,6 +83,50 @@ class AutoTests(unittest.TestCase):
                 "max_ips": 2,
                 "candidates": [{"name": "split", "kind": "multisplit", "priority": 1}],
             })
+
+    def test_probe_functions_are_reexported_without_duplicate_implementations(self):
+        self.assertIs(autoselect_https_request, probes_https_request)
+
+    def test_cached_candidate_uses_verified_probe_and_activates(self):
+        session = SessionStrategy("discord.com")
+        packet = FakePacket()
+        packet.payload = client_hello("discord.com")
+        packet.tcp.src_port = 51234
+        FakePacket.source = packet
+
+        def probe(host, ip, path, timeout, on_connected, accept=None):
+            on_connected(51234)
+            packet.dst_addr = ip
+            session.process(packet)
+            return 200, b""
+
+        selected = test_cached_candidate(
+            self.config,
+            session,
+            self.logger,
+            self.candidates[0],
+            ["192.0.2.1"],
+            probe,
+        )
+        self.assertEqual(selected.name, "split")
+        self.assertEqual(session.name, "split")
+
+    def test_failed_cached_candidate_leaves_full_scan_path_available(self):
+        session = SessionStrategy("discord.com")
+
+        def fail(*args, **kwargs):
+            raise ConnectionResetError("cached strategy reset")
+
+        selected = test_cached_candidate(
+            self.config,
+            session,
+            self.logger,
+            self.candidates[0],
+            ["192.0.2.1"],
+            fail,
+        )
+        self.assertIsNone(selected)
+        self.assertEqual(session.name, "auto")
 
     def test_all_working_candidates_are_tested_and_priority_selects(self):
         session = SessionStrategy("discord.com")
