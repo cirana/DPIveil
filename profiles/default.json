@@ -12,6 +12,7 @@
   "strategy_options": {
     "host": "discord.com",
     "timeout": 6,
+    "candidate_timeout": 4,
     "max_ips": 2,
     "candidates": [
       {

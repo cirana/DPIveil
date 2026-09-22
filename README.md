@@ -151,6 +151,7 @@ Varsayılan otomatik strateji yapılandırması:
   "strategy_options": {
     "host": "discord.com",
     "timeout": 6,
+    "candidate_timeout": 4,
     "max_ips": 2,
     "candidates": [
       {"name": "multisplit-2", "kind": "multisplit", "priority": 1, "split_pos": 2},

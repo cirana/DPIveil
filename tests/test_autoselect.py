@@ -37,6 +37,41 @@ class AutoTests(unittest.TestCase):
         self.assertTrue(direct_works(self.config, ["192.0.2.1", "192.0.2.2"], self.logger, probe))
         self.assertEqual(calls, ["192.0.2.1", "192.0.2.2"])
 
+    def test_direct_works_stops_after_verified_address(self):
+        calls = []
+
+        def probe(host, ip, path, timeout):
+            calls.append(ip)
+            return 200, b""
+
+        self.assertTrue(direct_works(self.config, ["192.0.2.1", "192.0.2.2"], self.logger, probe))
+        self.assertEqual(calls, ["192.0.2.1"])
+
+    def test_candidate_timeout_is_bounded_and_configurable(self):
+        config = AutoConfig.from_options({
+            "host": "discord.com",
+            "timeout": 6,
+            "max_ips": 2,
+            "candidates": [{"name": "split", "kind": "multisplit", "priority": 1}],
+        })
+        self.assertEqual(config.candidate_timeout, 4.0)
+        config = AutoConfig.from_options({
+            "host": "discord.com",
+            "timeout": 6,
+            "candidate_timeout": 3,
+            "max_ips": 2,
+            "candidates": [{"name": "split", "kind": "multisplit", "priority": 1}],
+        })
+        self.assertEqual(config.candidate_timeout, 3.0)
+        with self.assertRaises(ValueError):
+            AutoConfig.from_options({
+                "host": "discord.com",
+                "timeout": 3,
+                "candidate_timeout": 4,
+                "max_ips": 2,
+                "candidates": [{"name": "split", "kind": "multisplit", "priority": 1}],
+            })
+
     def test_all_working_candidates_are_tested_and_priority_selects(self):
         session = SessionStrategy("discord.com")
         seen = []

@@ -29,18 +29,22 @@ class AutoConfig:
     max_ips: int
     candidates: tuple[Candidate, ...]
     health_checks: tuple[tuple[str, str, str, str], ...] = DEFAULT_HEALTH_CHECKS
+    candidate_timeout: float | None = None
 
     @classmethod
     def from_options(cls, options):
         host = options.get("host", "discord.com")
         timeout = options.get("timeout", 6)
         max_ips = options.get("max_ips", 2)
+        candidate_timeout = options.get("candidate_timeout", min(float(timeout), 4.0))
         rows = options.get("candidates", [])
         checks = options.get("health_checks")
         if (not isinstance(host, str) or not host or not host.isascii() or
                 not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or
                 not 1 <= timeout <= 30 or not isinstance(max_ips, int) or
                 isinstance(max_ips, bool) or not 1 <= max_ips <= 10 or
+                not isinstance(candidate_timeout, (int, float)) or
+                isinstance(candidate_timeout, bool) or not 1 <= candidate_timeout <= timeout or
                 not isinstance(rows, list)):
             raise ValueError("Invalid auto strategy settings")
         candidates = tuple(Candidate(**row) for row in rows)
@@ -71,7 +75,10 @@ class AutoConfig:
                 raise ValueError("Health check names must be unique")
             parsed_checks = tuple(parsed)
 
-        return cls(host.lower(), float(timeout), max_ips, candidates, parsed_checks)
+        return cls(
+            host.lower(), float(timeout), max_ips, candidates, parsed_checks,
+            float(candidate_timeout),
+        )
 
 
 class DirectHTTPSConnection(http.client.HTTPSConnection):
@@ -379,6 +386,10 @@ def direct_works(config, addresses, logger, probe=https_request):
             status, _ = probe(config.host, ip, "/", config.timeout)
             logger.info("Direct HTTPS | %s | verified status=%s", ip, status)
             success = True
+            # One verified normal connection is sufficient to leave the
+            # packet engine in pass-through mode.  Do not wait on the other
+            # addresses after this path has already succeeded.
+            break
         except Exception as exc:
             logger.info("Direct HTTPS | %s | failed: %s", ip, exc)
     return success
@@ -401,6 +412,11 @@ def test_candidates(
     the deterministic priority ordering can be compared at the end.
     """
     ips = addresses or resolve_verified(config.host, config.timeout, config.max_ips)
+    # Candidate probes deliberately have a tighter bound than DNS and normal
+    # HTTPS checks.  A failed strategy must not hold startup for the full
+    # resolver timeout, while successful probes still require a complete,
+    # certificate-checked response.
+    probe_timeout = config.candidate_timeout or min(config.timeout, 4.0)
     details = {}
     successful = []
 
@@ -411,11 +427,11 @@ def test_candidates(
             session.set_probe(candidate, host=config.host, addresses=(ip,))
             try:
                 if candidate.transport == "udp":
-                    status, _ = quic_probe(config.host, ip, "/", config.timeout)
+                    status, _ = quic_probe(config.host, ip, "/", probe_timeout)
                     check_name = "quic"
                 else:
                     status, _ = _check_probe(
-                        "http", config.host, ip, "/", config.timeout,
+                        "http", config.host, ip, "/", probe_timeout,
                         on_connected=lambda port, c=candidate: session.bind_probe(c, port, config.host),
                         probe=probe,
                     )
