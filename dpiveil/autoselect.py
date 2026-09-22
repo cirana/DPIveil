@@ -400,9 +400,10 @@ def health_check_direct(config, logger):
 def direct_works(config, addresses, logger, probe=https_request):
     # Keep compatibility for existing tests/callers; the app now uses health_check_direct.
     success = False
+    probe_timeout = config.candidate_timeout or min(config.timeout, 4.0)
     for ip in addresses:
         try:
-            status, _ = probe(config.host, ip, "/", config.timeout)
+            status, _ = probe(config.host, ip, "/", probe_timeout)
             logger.info("Direct HTTPS | %s | verified status=%s", ip, status)
             success = True
             # One verified normal connection is sufficient to leave the

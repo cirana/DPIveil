@@ -27,15 +27,18 @@ class AutoTests(unittest.TestCase):
 
     def test_direct_works_checks_all_addresses(self):
         calls = []
+        timeouts = []
 
         def probe(host, ip, path, timeout):
             calls.append(ip)
+            timeouts.append(timeout)
             if ip.endswith(".1"):
                 raise TimeoutError("blocked")
             return 200, b""
 
         self.assertTrue(direct_works(self.config, ["192.0.2.1", "192.0.2.2"], self.logger, probe))
         self.assertEqual(calls, ["192.0.2.1", "192.0.2.2"])
+        self.assertEqual(timeouts, [2.0, 2.0])
 
     def test_direct_works_stops_after_verified_address(self):
         calls = []
