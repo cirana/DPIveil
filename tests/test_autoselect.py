@@ -68,8 +68,8 @@ class AutoTests(unittest.TestCase):
             seen,
             [
                 ("split", "192.0.2.1"), ("split", "192.0.2.2"),
-                ("disorder", "192.0.2.1"), ("disorder", "192.0.2.2"),
-                ("fake", "192.0.2.1"), ("fake", "192.0.2.2"),
+                ("disorder", "192.0.2.1"),
+                ("fake", "192.0.2.1"),
             ],
         )
         self.assertEqual(details, {

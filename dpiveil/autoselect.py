@@ -436,6 +436,10 @@ def test_candidates(
                 )
             finally:
                 session.set_probe(None)
+            # One verified address is enough to mark this candidate working;
+            # the remaining candidates must still be tested for comparison.
+            if ok:
+                break
 
         check_name = "quic" if candidate.transport == "udp" else "web"
         details[candidate.name] = {check_name: ok}
