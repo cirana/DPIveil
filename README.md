@@ -85,6 +85,12 @@ Konum:
 
 Bir sorun bildirirken bu log dosyasını paylaşmak tanılamayı kolaylaştırır.
 
+Başarılı otomatik strateji, aynı ağda sonraki açılışları hızlandırmak için
+strategy-cache.json dosyasına kaydedilir. Cache yalnızca gerçek ve sertifika
+doğrulamalı Discord probe'u başarılı olursa kullanılır; ağ rotası değişirse,
+aday profili değişirse, kayıt yedi günden eskiyse veya dosya bozuksa yok
+sayılır ve tam otomatik tarama çalışır.
+
 ## Antivirüs uyarıları hakkında
 
 DPIveil paket trafiğini işlemek için **WinDivert** kullanır.
@@ -170,7 +176,9 @@ Varsayılan otomatik strateji yapılandırması:
 ```text
 dpiveil/
   app.py          uygulama yaşam döngüsü
-  autoselect.py   otomatik HTTPS strateji testi ve seçimi
+  autoselect.py   otomatik aday/oturum stratejisi seçimi ve fallback akışı
+  probes.py       sertifika doğrulamalı HTTPS/WebSocket/QUIC ve DNS probe'ları
+  strategy_cache.py  ağ-bağımlı başarılı strateji cache'i
   constants.py    ortak Discord alan adı listesi
   dns_policy.py   Windows NRPT + DoH politikası
   engine.py       WinDivert paket motoru
