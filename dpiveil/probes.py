@@ -10,10 +10,16 @@ from __future__ import annotations
 import http.client
 import ipaddress
 import json
+import logging
+import os
 import socket
 import ssl
 import subprocess
+from pathlib import Path
 from urllib.parse import quote
+
+
+_LOGGER = logging.getLogger("dpiveil.probes")
 
 
 class DirectHTTPSConnection(http.client.HTTPSConnection):
@@ -120,16 +126,88 @@ def quic_request(host, address, path, timeout, on_connected=None):
     return status, b""
 
 
+def _curl_doh_request(server, path, timeout):
+    """Retry a DoH request with Windows curl/Schannel after Python cert errors."""
+    windows_root = os.environ.get("SystemRoot") or os.environ.get("WINDIR")
+    curl_exe = str(Path(windows_root) / "System32" / "curl.exe") if windows_root else "curl.exe"
+    command = [
+        curl_exe,
+        "--disable",  # Ignore user curl config files; TLS verification stays enabled.
+        "--silent",
+        "--show-error",
+        "--http1.1",
+        "--connect-timeout", str(max(1, int(timeout))),
+        "--max-time", str(max(1, int(timeout))),
+        "--resolve", f"cloudflare-dns.com:443:{server}",
+        "--header", "Accept: application/dns-json",
+        "--write-out", "\\n%{http_code}",
+        f"https://cloudflare-dns.com{path}",
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            timeout=max(2, float(timeout) + 2),
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise OSError(f"curl.exe DoH request failed: {exc}") from exc
+
+    output = result.stdout or b""
+    if result.returncode != 0:
+        detail = (result.stderr or b"").decode("utf-8", errors="replace").strip()
+        raise OSError(
+            f"curl.exe DoH request failed ({result.returncode}): "
+            f"{detail or 'no error details'}"
+        )
+
+    body, separator, status_text = output.rpartition(b"\n")
+    if not separator or not status_text.isdigit():
+        raise ValueError("curl.exe DoH response did not include an HTTP status")
+    status = int(status_text)
+    if status != 200:
+        raise ValueError(f"curl.exe DoH returned HTTP status {status}")
+    return status, body
+
+
 def resolve_verified(host, timeout, max_ips):
     # DoH's own TLS identity is verified even though system DNS is poisoned.
+    # Only a Python certificate-chain verification failure triggers curl: other
+    # network/TLS errors keep the original retry behavior and are not masked.
     last_error = None
     for server in ("1.1.1.1", "1.0.0.1"):
+        method = "Python HTTPS"
         try:
-            status, body = https_request(
-                "cloudflare-dns.com", server,
-                f"/dns-query?name={quote(host, safe='')}&type=A", timeout,
-                accept="application/dns-json",
-            )
+            path = f"/dns-query?name={quote(host, safe='')}&type=A"
+            try:
+                status, body = https_request(
+                    "cloudflare-dns.com", server, path, timeout,
+                    accept="application/dns-json",
+                )
+            except ssl.SSLCertVerificationError as python_error:
+                _LOGGER.warning(
+                    "Python DoH TLS certificate verification failed via %s: %s; "
+                    "retrying with curl.exe (certificate verification remains enabled).",
+                    server,
+                    python_error,
+                )
+                try:
+                    status, body = _curl_doh_request(server, path, timeout)
+                    method = "curl.exe"
+                except (OSError, ValueError) as curl_error:
+                    last_error = RuntimeError(
+                        f"Python TLS certificate verification failed: {python_error}; "
+                        f"curl.exe fallback failed: {curl_error}"
+                    )
+                    _LOGGER.error(
+                        "DoH failed via %s: Python certificate verification failed (%s); "
+                        "curl.exe fallback failed (%s).",
+                        server,
+                        python_error,
+                        curl_error,
+                    )
+                    continue
+
             data = json.loads(body)
             if status != 200 or data.get("Status") != 0:
                 raise ValueError("DoH returned no successful DNS answer")
@@ -138,10 +216,16 @@ def resolve_verified(host, timeout, max_ips):
                                 ipaddress.ip_address(entry["data"]).version == 4},
                                key=ipaddress.ip_address)
             if addresses:
+                if method == "curl.exe":
+                    _LOGGER.info("curl.exe DoH fallback returned a verified DNS answer via %s.", server)
                 return addresses[:max_ips]
             raise ValueError("No IPv4 A records")
         except (OSError, ssl.SSLError, ValueError, KeyError) as exc:
             last_error = exc
+            if method == "Python HTTPS":
+                _LOGGER.warning("Python DoH request failed via %s: %s", server, exc)
+            else:
+                _LOGGER.warning("curl.exe DoH response was invalid via %s: %s", server, exc)
     raise RuntimeError(f"Verified DNS unavailable: {last_error}")
 
 
@@ -156,5 +240,3 @@ def check_probe(kind, host, address, path, timeout, on_connected=None, probe=htt
         return websocket_probe(host, address, path, timeout, on_connected)
     accept = "application/json" if kind == "json" else None
     return probe(host, address, path, timeout, on_connected=on_connected, accept=accept)
-
-
